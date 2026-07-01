@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { isTauri } from "@/lib/ipc";
 import { useUi } from "@/stores/ui";
 
 /** Full-screen Inbox-Zero moment: celebration image + streak. Any key or
@@ -16,9 +18,12 @@ export function Celebration() {
       window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
-  const src = event.imagePath.startsWith("/")
-    ? event.imagePath
-    : `zenbox-celebration://${event.imagePath}`;
+  // bundled images are app-relative; user-folder images go through the
+  // asset protocol (scoped to the configured folder in the Rust core)
+  const src =
+    event.imagePath.startsWith("/") || !isTauri
+      ? event.imagePath
+      : convertFileSrc(event.imagePath);
 
   return (
     <div
