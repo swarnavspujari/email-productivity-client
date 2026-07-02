@@ -231,14 +231,185 @@ fn list_threads(state: State<'_, AppState>, view: String) -> Result<Vec<Thread>,
 #[tauri::command]
 async fn get_thread(state: State<'_, AppState>, thread_id: String) -> Result<Vec<Message>, String> {
     valid_id(&thread_id)?;
-    let msgs = {
+    let (mut msgs, account) = {
         let conn = state.db.lock().unwrap();
         let msgs = store::get_messages(&conn, &thread_id)?;
         store::set_unread(&conn, &thread_id, false)?;
-        msgs
+        (msgs, store::account_of_thread(&conn, &thread_id))
     };
     remote_modify(&state, &thread_id, &[], &["UNREAD"]).await.ok();
+
+    // Reading pane gets sanitized HTML only; raw bodies never reach the UI.
+    // cid: inline images resolve to data: URIs (fetched once, then cached).
+    for m in msgs.iter_mut() {
+        let Some(html) = m.body_html.clone() else { continue };
+        let mut cid_map = HashMap::new();
+        let inline = {
+            let conn = state.db.lock().unwrap();
+            store::inline_cids(&conn, &m.id)
+        };
+        for (att_id, content_id, mime, remote_id, has_data) in inline {
+            if !html.contains(&format!("cid:{content_id}")) {
+                continue;
+            }
+            let bytes = if has_data {
+                let conn = state.db.lock().unwrap();
+                store::attachment_data(&conn, &att_id)
+            } else if let (Some(remote), Some(acc)) = (remote_id.as_deref(), account.as_deref()) {
+                let mut sessions = state.gmail.lock().await;
+                if let Some(s) = sessions.get_mut(acc) {
+                    match s.get_attachment_bytes(&state.http, &m.id, remote).await {
+                        // inline images only; big blobs stay download-only
+                        Ok(b) if b.len() <= 2_000_000 => {
+                            let conn = state.db.lock().unwrap();
+                            let _ = store::set_attachment_data(&conn, &att_id, &b);
+                            Some(b)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(bytes) = bytes {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                cid_map.insert(content_id, format!("data:{mime};base64,{b64}"));
+            }
+        }
+        m.body_html = Some(mail::render::sanitize_email_html(&html, &cid_map));
+    }
     Ok(msgs)
+}
+
+// ---------------------------------------------------------------- attachments
+
+/// Attachment bytes from cache, demo fixture text, or Gmail (cached after).
+async fn attachment_bytes(
+    state: &State<'_, AppState>,
+    attachment_id: &str,
+) -> Result<(store::AttachmentRow, Vec<u8>), String> {
+    let row = {
+        let conn = state.db.lock().unwrap();
+        store::get_attachment(&conn, attachment_id).ok_or("unknown attachment")?
+    };
+    if let Some(data) = row.data.clone() {
+        return Ok((row, data));
+    }
+    let fixture_text: Option<String> = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT text_content FROM attachments WHERE id = ?1",
+            [attachment_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten()
+    };
+    if row.remote_id.is_none() {
+        if let Some(t) = fixture_text {
+            return Ok((row, t.into_bytes()));
+        }
+        return Err("this demo attachment has no file contents".into());
+    }
+    let account: Option<String> = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT account_id FROM threads WHERE id = (SELECT thread_id FROM messages WHERE id = ?1)",
+            [row.message_id.as_str()],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    let account = account.ok_or("the attachment's account is gone")?;
+    let remote = row.remote_id.clone().unwrap();
+    let mut sessions = state.gmail.lock().await;
+    let s = sessions
+        .get_mut(&account)
+        .ok_or("account not connected — reconnect Gmail to download")?;
+    let bytes = s.get_attachment_bytes(&state.http, &row.message_id, &remote).await?;
+    if bytes.len() <= 25_000_000 {
+        let conn = state.db.lock().unwrap();
+        let _ = store::set_attachment_data(&conn, attachment_id, &bytes);
+    }
+    Ok((row, bytes))
+}
+
+/// Save an attachment via the OS file dialog. None = user cancelled.
+#[tauri::command]
+async fn download_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    attachment_id: String,
+) -> Result<Option<String>, String> {
+    valid_id(&attachment_id)?;
+    let (row, bytes) = attachment_bytes(&state, &attachment_id).await?;
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app.dialog().file().set_file_name(&row.filename).blocking_save_file();
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("could not write the file: {e}"))?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Open an attachment with its default app (written to the app cache first).
+#[tauri::command]
+async fn open_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    attachment_id: String,
+) -> Result<(), String> {
+    valid_id(&attachment_id)?;
+    let (row, bytes) = attachment_bytes(&state, &attachment_id).await?;
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("attachments");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let safe_name: String = row
+        .filename
+        .chars()
+        .map(|c| if c.is_alphanumeric() || ".-_ ".contains(c) { c } else { '_' })
+        .collect();
+    let safe_name = if safe_name.trim().is_empty() { "attachment".into() } else { safe_name };
+    let path = dir.join(safe_name);
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    tauri_plugin_opener::open_path(&path, None::<String>)
+        .map_err(|_| "could not open the attachment".to_string())
+}
+
+// ---------------------------------------------------------------- drafts
+
+#[tauri::command]
+fn save_draft(
+    state: State<'_, AppState>,
+    draft_id: Option<i64>,
+    payload: String,
+) -> Result<i64, String> {
+    if payload.len() > 40_000_000 {
+        return Err("draft is too large".into());
+    }
+    let conn = state.db.lock().unwrap();
+    let account = store::get_accounts(&conn).active;
+    store::draft_save(&conn, draft_id, &account, &payload, now_ms())
+}
+
+#[tauri::command]
+fn list_drafts(state: State<'_, AppState>) -> Vec<DraftEntry> {
+    let conn = state.db.lock().unwrap();
+    let account = store::get_accounts(&conn).active;
+    store::draft_list(&conn, &account)
+        .into_iter()
+        .map(|(id, payload, updated_at)| DraftEntry { id, payload, updated_at })
+        .collect()
+}
+
+#[tauri::command]
+fn delete_draft(state: State<'_, AppState>, draft_id: i64) {
+    store::draft_delete(&state.db.lock().unwrap(), draft_id);
 }
 
 #[tauri::command]
@@ -565,6 +736,16 @@ fn validate_mail(mail: &OutgoingMail) -> Result<(), String> {
             return Err(format!("\"{addr}\" is not a valid address"));
         }
     }
+    // Gmail rejects raw messages over ~25 MB; base64 inflates by ~4/3.
+    let total: usize = mail.attachments.iter().map(|a| a.data_base64.len()).sum();
+    if total > 33_000_000 {
+        return Err("attachments exceed the 25 MB limit".into());
+    }
+    for a in &mail.attachments {
+        if a.filename.is_empty() || a.filename.len() > 255 {
+            return Err("attachment has an invalid filename".into());
+        }
+    }
     Ok(())
 }
 
@@ -885,6 +1066,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -1094,6 +1276,11 @@ pub fn run() {
             bulk_archive,
             queue_mail,
             cancel_outbox,
+            download_attachment,
+            open_attachment,
+            save_draft,
+            list_drafts,
+            delete_draft,
             get_settings,
             save_settings,
             get_knowledge_base,

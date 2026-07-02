@@ -12,6 +12,7 @@ interface Seed {
     Pick<Message, "from" | "fromName" | "to" | "cc" | "bodyText"> & {
       ageMs: number;
       unread?: boolean;
+      bodyHtml?: string;
       attachments?: Array<{ filename: string; mimeType: string; sizeBytes: number }>;
     }
   >;
@@ -207,6 +208,21 @@ const seeds: Seed[] = [
         unread: true,
         bodyText:
           "Top of the morning. A16z is raising its largest fund yet, per two sources... [newsletter continues]\n\nAlso today: the fintech secondaries market heats up, and a profile of the quiet giant of vertical SaaS.",
+        // Exercises the sanitized-HTML reading pane in demo mode: tables,
+        // inline styles, links, and an image, like real newsletter mail.
+        bodyHtml: `<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;font-family:Georgia,serif">
+  <tr><td style="background:#111827;color:#f9fafb;padding:18px 24px;font-size:20px;font-weight:bold">StrictlyVC</td></tr>
+  <tr><td style="padding:20px 24px;font-size:15px;line-height:1.6;color:#111827">
+    <p style="margin:0 0 12px">Top of the morning. <strong>A16z is raising its largest fund yet</strong>, per two sources with knowledge of the matter — a vehicle that would eclipse its 2024 flagship.</p>
+    <p style="margin:0 0 12px">Also today: the fintech secondaries market heats up, and a profile of <a href="https://example.com/vertical-saas">the quiet giant of vertical SaaS</a>.</p>
+    <table cellpadding="8" style="border:1px solid #e5e7eb;border-collapse:collapse;width:100%;font-size:13px">
+      <tr style="background:#f3f4f6"><td><b>Fund</b></td><td><b>Target</b></td><td><b>Status</b></td></tr>
+      <tr><td>Flagship VIII</td><td>$8.0B</td><td>Raising</td></tr>
+      <tr><td>Bio Fund IV</td><td>$2.5B</td><td>Closed</td></tr>
+    </table>
+    <p style="margin:16px 0 0;font-size:12px;color:#6b7280">You're receiving this because you subscribed. <a href="https://unsubscribe.example.com/strictlyvc">Unsubscribe</a></p>
+  </td></tr>
+</table>`,
       },
     ],
   },
@@ -462,7 +478,7 @@ function buildMessages(seed: Seed): Message[] {
     subject: seed.thread.subject,
     snippet: m.bodyText.slice(0, 120).replace(/\n+/g, " "),
     bodyText: m.bodyText,
-    bodyHtml: null,
+    bodyHtml: m.bodyHtml ?? null,
     date: now - m.ageMs,
     unread: m.unread ?? false,
     attachments: (m.attachments ?? []).map((a, j) => ({

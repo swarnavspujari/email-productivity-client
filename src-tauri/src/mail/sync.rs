@@ -1,5 +1,12 @@
 //! Pulls Gmail state into SQLite. The DB is the single source of truth for
 //! the UI; sync reconciles it with the server.
+//!
+//! Two paths:
+//! - **incremental** (normal): users.history.list since the stored per-account
+//!   historyId — cheap, catches changes to any thread, no listing caps.
+//! - **reconcile** (first sync / expired historyId): paged thread listings
+//!   (inbox up to 500, recent archived up to 200) diffed by per-thread
+//!   historyId, then the new baseline historyId is stored.
 use crate::mail::gmail::{parse_gmail_message, GmailSession};
 use crate::store;
 use crate::types::*;
@@ -7,24 +14,125 @@ use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// Full reconcile of one account: INBOX + recent archived threads. Returns
-/// true if anything changed (caller emits mail:updated).
+const INBOX_BACKFILL: usize = 500;
+const DONE_BACKFILL: usize = 200;
+
+fn history_key(account_id: &str) -> String {
+    format!("history:{account_id}")
+}
+
+/// Sync one account. Returns true if anything changed (caller emits
+/// mail:updated).
 pub async fn full_sync(
     http: &reqwest::Client,
     session: &mut GmailSession,
     db: &std::sync::Mutex<Connection>,
     account_id: &str,
 ) -> Result<bool, String> {
-    let inbox = session.list_thread_ids(http, "in:inbox", 100).await?;
+    let key = history_key(account_id);
+    let start: Option<String> = {
+        let conn = db.lock().unwrap();
+        store::get_json(&conn, &key)
+    };
+    let mut changed = match start {
+        Some(hid) => match incremental(http, session, db, account_id, &hid, &key).await {
+            Ok(c) => c,
+            // expired historyId (Gmail keeps ~a week) → full reconcile
+            Err(e) if e.contains("(404") => reconcile(http, session, db, account_id, &key).await?,
+            Err(e) => return Err(e),
+        },
+        None => reconcile(http, session, db, account_id, &key).await?,
+    };
+
+    // Muted threads never sit in the inbox: any that resurfaced (new reply)
+    // are re-archived, mirroring Gmail's mute semantics locally.
+    let muted: Vec<String> = {
+        let conn = db.lock().unwrap();
+        store::muted_inbox_threads(&conn, account_id)
+    };
+    for id in muted {
+        let _ = session.modify_thread(http, &id, &[], &["INBOX"]).await;
+        let conn = db.lock().unwrap();
+        store::set_in_inbox(&conn, &id, false)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// history.list-driven catch-up: collect affected thread ids, refetch those.
+async fn incremental(
+    http: &reqwest::Client,
+    session: &mut GmailSession,
+    db: &std::sync::Mutex<Connection>,
+    account_id: &str,
+    start_history_id: &str,
+    key: &str,
+) -> Result<bool, String> {
+    let mut affected: HashSet<String> = HashSet::new();
+    let mut latest = start_history_id.to_string();
+    let mut page_token: Option<String> = None;
+    let empty: Vec<Value> = vec![];
+    loop {
+        let v = session
+            .history_page(http, start_history_id, page_token.as_deref())
+            .await?; // 404 propagates to the caller for fallback
+        if let Some(hid) = v["historyId"].as_str() {
+            latest = hid.to_string();
+        }
+        for h in v["history"].as_array().unwrap_or(&empty) {
+            for kind in ["messagesAdded", "messagesDeleted", "labelsAdded", "labelsRemoved"] {
+                for entry in h[kind].as_array().unwrap_or(&empty) {
+                    if let Some(tid) = entry["message"]["threadId"].as_str() {
+                        affected.insert(tid.to_string());
+                    }
+                }
+            }
+        }
+        page_token = v["nextPageToken"].as_str().map(str::to_string);
+        if page_token.is_none() {
+            break;
+        }
+    }
+
+    let mut changed = false;
+    for tid in &affected {
+        changed |= refetch_thread(http, session, db, account_id, tid).await?;
+    }
+    if latest != start_history_id {
+        let conn = db.lock().unwrap();
+        store::set_json(&conn, key, &latest)?;
+    }
+    Ok(changed)
+}
+
+/// Full listing pass; also the initial backfill. Stores the new baseline
+/// historyId (captured BEFORE listing, so nothing in between is missed).
+async fn reconcile(
+    http: &reqwest::Client,
+    session: &mut GmailSession,
+    db: &std::sync::Mutex<Connection>,
+    account_id: &str,
+    key: &str,
+) -> Result<bool, String> {
+    let prof = session.profile(http).await?;
+    let baseline = prof["historyId"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| prof["historyId"].as_u64().map(|n| n.to_string()))
+        .unwrap_or_default();
+
+    let inbox = session
+        .list_thread_ids_paged(http, "in:inbox", INBOX_BACKFILL)
+        .await?;
     let done = session
-        .list_thread_ids(http, "-in:inbox -in:spam -in:trash -in:draft", 50)
+        .list_thread_ids_paged(http, "-in:inbox -in:spam -in:trash -in:draft", DONE_BACKFILL)
         .await?;
 
     let inbox_ids: HashSet<&str> = inbox.iter().map(|(id, _)| id.as_str()).collect();
     let mut changed = false;
 
     // Which threads need a full fetch? New ones and ones whose historyId moved.
-    let mut to_fetch: Vec<(String, bool)> = vec![]; // (id, in_inbox)
+    let mut to_fetch: Vec<String> = vec![];
     {
         let conn = db.lock().unwrap();
         for (id, history_id) in inbox.iter().chain(done.iter()) {
@@ -36,7 +144,7 @@ pub async fn full_sync(
                 )
                 .ok();
             if known.as_deref() != Some(history_id.as_str()) {
-                to_fetch.push((id.clone(), inbox_ids.contains(id.as_str())));
+                to_fetch.push(id.clone());
             }
         }
 
@@ -55,49 +163,79 @@ pub async fn full_sync(
         }
     }
 
-    for (id, in_inbox) in to_fetch {
-        let v = session.get_thread_full(http, &id).await?;
-        let history_id = v["historyId"].as_str().unwrap_or_default().to_string();
-        let (thread, msgs) = thread_from_json(&id, &v, in_inbox);
-        {
-            let conn = db.lock().unwrap();
-            // A snoozed thread that grew a new message wakes up immediately.
-            let existing = store::get_thread(&conn, &id);
-            let was_snoozed = existing.as_ref().and_then(|t| t.snoozed_until).is_some();
-            let grew = existing
-                .map(|t| t.message_count < thread.message_count)
-                .unwrap_or(false);
-            store::upsert_thread(&conn, account_id, &thread, &msgs)?;
-            if was_snoozed && !grew {
-                // keep the local snooze: sync would otherwise resurface it
-                conn.execute(
-                    "UPDATE threads SET in_inbox = 0, snoozed_until = (SELECT snoozed_until FROM threads WHERE id = ?1) WHERE id = ?1",
-                    [id.as_str()],
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            conn.execute(
-                "UPDATE threads SET history_id = ?2 WHERE id = ?1",
-                rusqlite::params![id, history_id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
+    for id in to_fetch {
+        refetch_thread(http, session, db, account_id, &id).await?;
         changed = true;
     }
 
-    // Muted threads never sit in the inbox: any that resurfaced (new reply)
-    // are re-archived, mirroring Gmail's mute semantics locally.
-    let muted: Vec<String> = {
+    if !baseline.is_empty() {
         let conn = db.lock().unwrap();
-        store::muted_inbox_threads(&conn, account_id)
-    };
-    for id in muted {
-        let _ = session.modify_thread(http, &id, &[], &["INBOX"]).await;
-        let conn = db.lock().unwrap();
-        store::set_in_inbox(&conn, &id, false)?;
-        changed = true;
+        store::set_json(&conn, key, &baseline)?;
     }
     Ok(changed)
+}
+
+/// Fetch one thread and apply it locally. Handles deletion (404 → drop the
+/// local row), snooze preservation, and hidden threads. Returns true if the
+/// local DB changed.
+async fn refetch_thread(
+    http: &reqwest::Client,
+    session: &mut GmailSession,
+    db: &std::sync::Mutex<Connection>,
+    account_id: &str,
+    id: &str,
+) -> Result<bool, String> {
+    let v = match session.get_thread_full(http, id).await {
+        Ok(v) => v,
+        Err(e) if e.contains("(404") => {
+            // gone server-side (permanent delete) — drop it locally too
+            let conn = db.lock().unwrap();
+            let existed = store::get_thread(&conn, id).is_some();
+            if existed {
+                store::delete_thread(&conn, id)?;
+            }
+            return Ok(existed);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let history_id = v["historyId"].as_str().unwrap_or_default().to_string();
+    let empty = vec![];
+    let in_inbox = v["messages"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .any(|m| {
+            m["labelIds"]
+                .as_array()
+                .map(|ls| ls.iter().any(|l| l.as_str() == Some("INBOX")))
+                .unwrap_or(false)
+        });
+    let (thread, msgs) = thread_from_json(id, &v, in_inbox);
+    {
+        let conn = db.lock().unwrap();
+        // A snoozed thread that grew a new message wakes up immediately.
+        let existing = store::get_thread(&conn, id);
+        let was_snoozed = existing.as_ref().and_then(|t| t.snoozed_until).is_some();
+        let grew = existing
+            .map(|t| t.message_count < thread.message_count)
+            .unwrap_or(false);
+        store::upsert_thread(&conn, account_id, &thread, &msgs)?;
+        if was_snoozed && !grew {
+            // keep the local snooze: sync would otherwise resurface it
+            conn.execute(
+                "UPDATE threads SET in_inbox = 0, snoozed_until = (SELECT snoozed_until FROM threads WHERE id = ?1) WHERE id = ?1",
+                [id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        conn.execute(
+            "UPDATE threads SET history_id = ?2 WHERE id = ?1",
+            rusqlite::params![id, history_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(true)
 }
 
 pub fn thread_from_json(id: &str, v: &Value, in_inbox: bool) -> (Thread, Vec<store::MsgRow>) {
@@ -131,7 +269,7 @@ pub fn thread_from_json(id: &str, v: &Value, in_inbox: bool) -> (Thread, Vec<sto
         let atts = parsed
             .attachments
             .into_iter()
-            .map(|(a, remote)| (a, remote, None))
+            .map(|(a, remote, content_id)| (a, remote, content_id, None))
             .collect();
         msgs.push((parsed.message, parsed.rfc_message_id, parsed.list_unsubscribe, atts));
     }

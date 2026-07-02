@@ -10,6 +10,7 @@ import type {
 import type {
   AccountsState,
   AiProviderId,
+  DraftEntry,
   DraftRequest,
   KnowledgeBase,
   Message,
@@ -40,6 +41,8 @@ interface PersistedState {
   trashed: string[]; // legacy hard-trash list (pre-undo); still honored
   outbox: { id: number; mail: OutgoingMail; sendAt: number }[];
   outboxSeq: number;
+  drafts: DraftEntry[];
+  draftSeq: number;
   settings: Settings;
   kb: KnowledgeBase;
   streaks: Streaks;
@@ -54,6 +57,8 @@ function loadPersisted(): PersistedState {
     trashed: [],
     outbox: [],
     outboxSeq: 1,
+    drafts: [],
+    draftSeq: 1,
     settings: defaultSettings(),
     kb: defaultKnowledgeBase(),
     streaks: { daily: 0, weekly: 0, lastZeroDay: null },
@@ -404,6 +409,66 @@ export class MockBackend implements Backend {
     }
     if (n) this.notify();
     return n;
+  }
+
+  /** Demo attachments have no real bytes — serve a stand-in text file. */
+  private attachmentBlob(attachmentId: string): { name: string; blob: Blob } | null {
+    for (const msgs of this.messages.values()) {
+      for (const m of msgs) {
+        const a = m.attachments.find((a) => a.id === attachmentId);
+        if (a) {
+          const content = `Demo attachment: ${a.filename}\n(${a.mimeType}, ${a.sizeBytes} bytes in the fixture inbox — real bytes come from Gmail in the desktop app.)`;
+          return { name: a.filename, blob: new Blob([content], { type: "text/plain" }) };
+        }
+      }
+    }
+    return null;
+  }
+
+  async downloadAttachment(attachmentId: string): Promise<string | null> {
+    const att = this.attachmentBlob(attachmentId);
+    if (!att) throw new Error("unknown attachment");
+    const url = URL.createObjectURL(att.blob);
+    const aEl = document.createElement("a");
+    aEl.href = url;
+    aEl.download = att.name;
+    aEl.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    return att.name;
+  }
+
+  async openAttachment(attachmentId: string): Promise<void> {
+    const att = this.attachmentBlob(attachmentId);
+    if (!att) throw new Error("unknown attachment");
+    const url = URL.createObjectURL(att.blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  async saveDraft(draftId: number | null, payload: string): Promise<number> {
+    const now = Date.now();
+    if (draftId !== null) {
+      const d = this.state.drafts.find((d) => d.id === draftId);
+      if (d) {
+        d.payload = payload;
+        d.updatedAt = now;
+        this.persist();
+        return draftId;
+      }
+    }
+    const id = this.state.draftSeq++;
+    this.state.drafts.push({ id, payload, updatedAt: now });
+    this.persist();
+    return id;
+  }
+
+  async listDrafts(): Promise<DraftEntry[]> {
+    return [...this.state.drafts].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async deleteDraft(draftId: number): Promise<void> {
+    this.state.drafts = this.state.drafts.filter((d) => d.id !== draftId);
+    this.persist();
   }
 
   async getSettings() {

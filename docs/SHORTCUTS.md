@@ -19,7 +19,7 @@ Aligned with **Superhuman v7 (Windows & Linux edition)**. `mod` = `Ctrl` on Wind
 |---|---|---|---|
 | `G` then `I` | Inbox / Important | `G` then `E` | Done |
 | `G` then `O` | Other | `G` then `H` | Reminders |
-| `G` then `S` | Starred | | |
+| `G` then `S` | Starred | `G` then `D` | Drafts (resume unsent) |
 
 ## Triage
 
@@ -59,7 +59,9 @@ Aligned with **Superhuman v7 (Windows & Linux edition)**. `mod` = `Ctrl` on Wind
 | `Ctrl+Shift+Enter` | Send & Mark Done |
 | `Ctrl+Shift+L` | Send Later… (delivers even after an app restart) |
 | `Ctrl+;` | Insert snippet (from Settings → Knowledge Base) |
-| `Esc` | Close AI bar, then discard |
+| `Esc` | Close AI bar, then close compose — **the draft is saved automatically** (`G`,`D` resumes; Discard deletes) |
+
+Attachments: **📎 Attach** in compose (25 MB total). In the reading pane, click an attachment to open it, `⭳` to save. HTML mail renders sanitized (scripts stripped) with quoted trails collapsed behind `•••`.
 
 ## Palette-only
 

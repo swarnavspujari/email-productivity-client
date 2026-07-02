@@ -65,6 +65,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "goto.done": "g e",
   "goto.reminders": "g h",
   "goto.starred": "g s",
+  "goto.drafts": "g d",
   "compose.ai": "mod+j",
   "compose.send": "mod+enter",
   "compose.sendDone": "mod+shift+enter",

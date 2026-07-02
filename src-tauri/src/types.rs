@@ -150,6 +150,16 @@ pub struct DraftRequest {
     pub provider_id: Option<String>,
 }
 
+/// A file attached to an outgoing message (bytes travel base64 over IPC and
+/// sit in the outbox payload so scheduled sends survive restarts).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MailAttachment {
+    pub filename: String,
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct OutgoingMail {
@@ -158,7 +168,22 @@ pub struct OutgoingMail {
     pub cc: Vec<String>,
     pub subject: String,
     pub body_text: String,
+    /// HTML alternative (signatures with images); None = plain text only.
+    #[serde(default)]
+    pub body_html: Option<String>,
     pub reply_all: bool,
+    #[serde(default)]
+    pub attachments: Vec<MailAttachment>,
+}
+
+/// A locally persisted, unsent compose draft. `payload` is the frontend's
+/// compose state as opaque JSON — the core only stores and lists it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftEntry {
+    pub id: i64,
+    pub payload: String,
+    pub updated_at: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

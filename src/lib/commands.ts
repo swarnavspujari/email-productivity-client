@@ -70,6 +70,8 @@ export async function startReply(
     threadId: id,
     to: "",
     cc: "",
+    attachments: [],
+    draftId: null,
     signature: activeSignature(),
     subject:
       mode === "forward"
@@ -141,6 +143,8 @@ export function allCommands(): Command[] {
           body: "",
           signature: activeSignature(),
           quote: "",
+          attachments: [],
+          draftId: null,
         }),
     },
     {
@@ -238,6 +242,8 @@ export function allCommands(): Command[] {
             body: "Please unsubscribe me from this list.",
             signature: "",
             quote: "",
+            attachments: [],
+            draftId: null,
           });
         } else {
           ui().showToast("No unsubscribe link in this thread");
@@ -470,6 +476,13 @@ export function allCommands(): Command[] {
       },
     },
     {
+      id: "goto.drafts",
+      title: "Drafts…",
+      group: "Navigate",
+      when: () => !inCompose(),
+      run: () => ui().openPicker("drafts"),
+    },
+    {
       id: "compose.ai",
       title: "Write with AI",
       group: "AI",
@@ -579,7 +592,21 @@ export function allCommands(): Command[] {
         const u = ui();
         if (u.askAiOpen) return u.setAskAiOpen(false);
         if (u.aiBarOpen) return u.setAiBarOpen(false);
-        if (u.compose) return u.closeCompose();
+        if (u.compose) {
+          // Esc keeps your work: flush a final draft save, then close.
+          const c = u.compose;
+          const hasContent =
+            !!(c.to.trim() || c.subject.trim() || c.body.trim()) ||
+            c.attachments.length > 0;
+          if (hasContent) {
+            const { draftId, ...payload } = c;
+            void backend
+              .saveDraft(draftId, JSON.stringify(payload))
+              .then(() => u.showToast("Draft saved"))
+              .catch(() => {});
+          }
+          return u.closeCompose();
+        }
         if (mail().openThreadId) return mail().closeThread();
         if (u.screen !== "mail") return u.setScreen("mail");
       },

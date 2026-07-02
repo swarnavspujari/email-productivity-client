@@ -115,13 +115,30 @@ export interface DraftRequest {
   providerId: AiProviderId | null; // null = default
 }
 
+/** A file attached to an outgoing message (base64 so the outbox survives restarts). */
+export interface MailAttachment {
+  filename: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
 export interface OutgoingMail {
   threadId: ThreadId | null; // reply target, null = new thread
   to: string[];
   cc: string[];
   subject: string;
   bodyText: string;
+  /** HTML alternative (signatures with images); null = plain text only. */
+  bodyHtml: string | null;
   replyAll: boolean;
+  attachments: MailAttachment[];
+}
+
+/** A locally persisted, unsent compose draft (payload = ComposeState JSON). */
+export interface DraftEntry {
+  id: number;
+  payload: string;
+  updatedAt: number;
 }
 
 export interface SearchResult {

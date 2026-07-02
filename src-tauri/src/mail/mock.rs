@@ -396,7 +396,7 @@ pub fn seed_if_empty(conn: &Connection) -> Result<(), String> {
                 participants.push(p);
             }
             let mid = format!("{}-m{}", s.id, i + 1);
-            let atts: Vec<(Attachment, Option<String>, Option<String>)> = sm
+            let atts: Vec<(Attachment, Option<String>, Option<String>, Option<String>)> = sm
                 .attachments
                 .iter()
                 .enumerate()
@@ -409,6 +409,7 @@ pub fn seed_if_empty(conn: &Connection) -> Result<(), String> {
                             mime_type: mime.to_string(),
                             size_bytes: *size,
                         },
+                        None,
                         None,
                         text.map(|t| t.to_string()),
                     )

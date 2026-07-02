@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { backend } from "@/lib/ipc";
 import { splitThreads, useMail, visibleThreads } from "./mail";
 import { useSettings } from "./settings";
-import type { ThreadId, ZeroEvent } from "@/lib/types";
+import type { MailAttachment, OutgoingMail, ThreadId, ZeroEvent } from "@/lib/types";
 
 export type Screen = "mail" | "settings" | "search";
 
@@ -17,9 +17,42 @@ export interface ComposeState {
   body: string;
   signature: string; // active account's signature, appended on send
   quote: string; // read-only quoted context shown under the editor
+  attachments: MailAttachment[];
+  /** Persisted-draft row backing this compose; null until first autosave. */
+  draftId: number | null;
 }
 
-export type Picker = "none" | "snooze" | "move" | "zeroSweep" | "sendLater" | "snippet";
+/** The one place a compose window turns into an outgoing message. */
+export function outgoingFromCompose(c: ComposeState): OutgoingMail {
+  const split = (raw: string) =>
+    raw
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const bodyText = [c.body, c.signature, c.quote]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    threadId: c.threadId,
+    to: split(c.to),
+    cc: split(c.cc),
+    subject: c.subject || "(no subject)",
+    bodyText,
+    bodyHtml: null,
+    replyAll: c.mode === "replyAll",
+    attachments: c.attachments,
+  };
+}
+
+export type Picker =
+  | "none"
+  | "snooze"
+  | "move"
+  | "zeroSweep"
+  | "sendLater"
+  | "snippet"
+  | "drafts";
 
 interface UiState {
   screen: Screen;

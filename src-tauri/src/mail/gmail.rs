@@ -176,31 +176,64 @@ impl GmailSession {
             .ok_or("profile had no email".to_string())
     }
 
-    /// (thread_id, history_id) pairs for a query.
-    pub async fn list_thread_ids(
+    /// (thread_id, history_id) pairs for a query, following nextPageToken
+    /// until `max_total` threads or the listing ends.
+    pub async fn list_thread_ids_paged(
         &mut self,
         http: &reqwest::Client,
         query: &str,
-        max: u32,
+        max_total: usize,
     ) -> Result<Vec<(String, String)>, String> {
-        let url = format!(
-            "{BASE}/threads?maxResults={max}&q={}",
-            url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
-        );
-        let v = self.get_json(http, &url).await?;
-        Ok(v["threads"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|t| {
-                        Some((
-                            t["id"].as_str()?.to_string(),
+        let mut out: Vec<(String, String)> = vec![];
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut url = format!(
+                "{BASE}/threads?maxResults=100&q={}",
+                url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
+            );
+            if let Some(t) = &page_token {
+                url.push_str(&format!("&pageToken={t}"));
+            }
+            let v = self.get_json(http, &url).await?;
+            if let Some(arr) = v["threads"].as_array() {
+                for t in arr {
+                    if let Some(id) = t["id"].as_str() {
+                        out.push((
+                            id.to_string(),
                             t["historyId"].as_str().unwrap_or_default().to_string(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default())
+                        ));
+                    }
+                }
+            }
+            page_token = v["nextPageToken"].as_str().map(str::to_string);
+            if page_token.is_none() || out.len() >= max_total {
+                break;
+            }
+        }
+        out.truncate(max_total);
+        Ok(out)
+    }
+
+    /// The account's current profile (email + latest historyId) — the
+    /// baseline for incremental sync.
+    pub async fn profile(&mut self, http: &reqwest::Client) -> Result<Value, String> {
+        self.get_json(http, &format!("{BASE}/profile")).await
+    }
+
+    /// One page of users.history.list since `start_history_id`. A 404 means
+    /// the id expired (server keeps ~a week) — callers fall back to a full
+    /// reconcile.
+    pub async fn history_page(
+        &mut self,
+        http: &reqwest::Client,
+        start_history_id: &str,
+        page_token: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut url = format!("{BASE}/history?startHistoryId={start_history_id}&maxResults=100");
+        if let Some(t) = page_token {
+            url.push_str(&format!("&pageToken={t}"));
+        }
+        self.get_json(http, &url).await
     }
 
     pub async fn get_thread_full(
@@ -282,7 +315,8 @@ pub struct ParsedMessage {
     pub message: Message,
     pub rfc_message_id: Option<String>,
     pub list_unsubscribe: Option<String>,
-    pub attachments: Vec<(Attachment, Option<String>)>, // (meta, gmail attachment id)
+    /// (meta, gmail attachment id, Content-ID without angle brackets)
+    pub attachments: Vec<(Attachment, Option<String>, Option<String>)>,
     pub label_ids: Vec<String>,
 }
 
@@ -391,21 +425,30 @@ pub fn strip_html(html: &str) -> String {
     result.trim().to_string()
 }
 
+// filename, mime, size, attachment_id, content_id
+type RawAtt = (String, String, i64, String, Option<String>);
+
 fn walk_parts(
     part: &Value,
     text: &mut Option<String>,
     html: &mut Option<String>,
-    atts: &mut Vec<(String, String, i64, String)>, // filename, mime, size, attachment_id
+    atts: &mut Vec<RawAtt>,
 ) {
     let mime = part["mimeType"].as_str().unwrap_or_default();
     let filename = part["filename"].as_str().unwrap_or_default();
-    if !filename.is_empty() {
+    // Content-ID marks inline images referenced as cid: from the HTML body —
+    // those often have empty filenames, so check it alongside filename.
+    let content_id = header(part, "Content-ID")
+        .or_else(|| header(part, "Content-Id"))
+        .map(|s| s.trim_start_matches('<').trim_end_matches('>').to_string());
+    if !filename.is_empty() || content_id.is_some() {
         if let Some(att_id) = part["body"]["attachmentId"].as_str() {
             atts.push((
                 filename.to_string(),
                 mime.to_string(),
                 part["body"]["size"].as_i64().unwrap_or(0),
                 att_id.to_string(),
+                content_id,
             ));
         }
     } else if mime == "text/plain" && text.is_none() {
@@ -453,7 +496,7 @@ pub fn parse_gmail_message(msg: &Value, thread_id: &str) -> ParsedMessage {
     let attachments = raw_atts
         .into_iter()
         .enumerate()
-        .map(|(i, (filename, mime, size, att_id))| {
+        .map(|(i, (filename, mime, size, att_id, content_id))| {
             (
                 Attachment {
                     id: format!("{id}-a{}", i + 1),
@@ -463,6 +506,7 @@ pub fn parse_gmail_message(msg: &Value, thread_id: &str) -> ParsedMessage {
                     size_bytes: size,
                 },
                 Some(att_id),
+                content_id,
             )
         })
         .collect();
@@ -490,7 +534,9 @@ pub fn parse_gmail_message(msg: &Value, thread_id: &str) -> ParsedMessage {
     }
 }
 
-/// Build the outgoing RFC 822 message for messages.send.
+/// Build the outgoing RFC 822 message for messages.send. Plain text always;
+/// optional HTML alternative (multipart/alternative) and base64 attachments
+/// (multipart/mixed around everything).
 pub fn build_rfc822(
     from: &str,
     mail: &OutgoingMail,
@@ -511,7 +557,54 @@ pub fn build_rfc822(
         headers.push(format!("References: {irt}"));
     }
     headers.push("MIME-Version: 1.0".to_string());
-    headers.push("Content-Type: text/plain; charset=UTF-8".to_string());
-    headers.push("Content-Transfer-Encoding: 8bit".to_string());
-    format!("{}\r\n\r\n{}", headers.join("\r\n"), mail.body_text)
+
+    let body = body_section(mail);
+    if mail.attachments.is_empty() {
+        return format!("{}\r\n{}", headers.join("\r\n"), body);
+    }
+
+    let boundary = format!("zbmix{:016x}", chrono::Utc::now().timestamp_millis());
+    headers.push(format!("Content-Type: multipart/mixed; boundary=\"{boundary}\""));
+    let mut out = format!("{}\r\n\r\n", headers.join("\r\n"));
+    out.push_str(&format!("--{boundary}\r\n{body}\r\n"));
+    for att in &mail.attachments {
+        let name = att.filename.replace(['"', '\r', '\n'], "_");
+        let mime: String = att
+            .mime_type
+            .chars()
+            .filter(|c| c.is_ascii_graphic() && *c != '"')
+            .collect();
+        let mime = if mime.is_empty() { "application/octet-stream".to_string() } else { mime };
+        out.push_str(&format!(
+            "--{boundary}\r\nContent-Type: {mime}; name=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n\r\n"
+        ));
+        // RFC 2045 caps encoded lines at 76 chars
+        for chunk in att.data_base64.as_bytes().chunks(76) {
+            out.push_str(&String::from_utf8_lossy(chunk));
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str(&format!("--{boundary}--\r\n"));
+    out
+}
+
+/// The message body as a MIME section (headers + blank line + content):
+/// text/plain alone, or a multipart/alternative with the HTML variant.
+fn body_section(mail: &OutgoingMail) -> String {
+    match &mail.body_html {
+        None => format!(
+            "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{}",
+            mail.body_text
+        ),
+        Some(html) => {
+            let boundary = format!("zbalt{:016x}", chrono::Utc::now().timestamp_millis() ^ 0x5a5a);
+            format!(
+                "Content-Type: multipart/alternative; boundary=\"{boundary}\"\r\n\r\n\
+                 --{boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{}\r\n\
+                 --{boundary}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{}\r\n\
+                 --{boundary}--\r\n",
+                mail.body_text, html
+            )
+        }
+    }
 }

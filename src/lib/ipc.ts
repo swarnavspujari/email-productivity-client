@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AccountsState,
   AiProviderId,
+  DraftEntry,
   DraftRequest,
   KnowledgeBase,
   Message,
@@ -67,6 +68,16 @@ export interface Backend {
   cancelOutbox(outboxId: number): Promise<OutgoingMail>;
   search(query: string): Promise<SearchResult[]>;
   bulkArchive(opts: BulkArchiveOpts): Promise<number>;
+
+  /** Save via OS dialog. Resolves to the path, or null if cancelled. */
+  downloadAttachment(attachmentId: string): Promise<string | null>;
+  /** Open with the default app. */
+  openAttachment(attachmentId: string): Promise<void>;
+
+  /** Persist an unsent draft; pass null id to create. Returns the draft id. */
+  saveDraft(draftId: number | null, payload: string): Promise<number>;
+  listDrafts(): Promise<DraftEntry[]>;
+  deleteDraft(draftId: number): Promise<void>;
 
   getSettings(): Promise<Settings>;
   saveSettings(settings: Settings): Promise<void>;
@@ -170,6 +181,21 @@ class TauriBackend implements Backend {
   }
   bulkArchive(opts: BulkArchiveOpts) {
     return invoke<number>("bulk_archive", { opts });
+  }
+  downloadAttachment(attachmentId: string) {
+    return invoke<string | null>("download_attachment", { attachmentId });
+  }
+  openAttachment(attachmentId: string) {
+    return invoke<void>("open_attachment", { attachmentId });
+  }
+  saveDraft(draftId: number | null, payload: string) {
+    return invoke<number>("save_draft", { draftId, payload });
+  }
+  listDrafts() {
+    return invoke<DraftEntry[]>("list_drafts");
+  }
+  deleteDraft(draftId: number) {
+    return invoke<void>("delete_draft", { draftId });
   }
   getSettings() {
     return invoke<Settings>("get_settings");

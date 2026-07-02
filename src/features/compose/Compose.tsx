@@ -5,15 +5,39 @@ import { pushTriageUndo, shortcutHint } from "@/lib/commands";
 import { pushUndo } from "@/lib/undo";
 import { useMail } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
-import { useUi } from "@/stores/ui";
+import { outgoingFromCompose, useUi } from "@/stores/ui";
+import type { MailAttachment } from "@/lib/types";
 
 const UNDO_SEND_MS = 10_000;
+const MAX_ATTACH_TOTAL = 25_000_000; // Gmail's raw-message ceiling
 
 function splitAddresses(raw: string): string[] {
   return raw
     .split(/[,;]/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes > 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes > 1_000) return `${Math.round(bytes / 1_000)} KB`;
+  return `${bytes} B`;
+}
+
+function readFileB64(file: File): Promise<MailAttachment> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(new Error(`could not read ${file.name}`));
+    r.onload = () => {
+      const url = String(r.result); // data:<mime>;base64,<data>
+      resolve({
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        dataBase64: url.slice(url.indexOf(",") + 1),
+      });
+    };
+    r.readAsDataURL(file);
+  });
 }
 
 /** The Ctrl+J "Write with AI" instruction bar. */
@@ -118,6 +142,7 @@ export function Compose() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const patch = (p: Partial<typeof compose>) =>
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, ...p } : null }));
@@ -125,6 +150,54 @@ export function Compose() {
   useEffect(() => {
     bodyRef.current?.focus();
   }, []);
+
+  // Autosave the draft while typing, so a crash or close loses nothing.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const c = useUi.getState().compose;
+      if (!c) return;
+      const hasContent =
+        !!(c.to.trim() || c.subject.trim() || c.body.trim()) ||
+        c.attachments.length > 0;
+      if (!hasContent) return;
+      const { draftId, ...payload } = c;
+      void backend
+        .saveDraft(draftId, JSON.stringify(payload))
+        .then((id) => {
+          const cur = useUi.getState().compose;
+          if (cur && cur.draftId !== id) {
+            useUi.setState((s) => ({
+              compose: s.compose ? { ...s.compose, draftId: id } : null,
+            }));
+          }
+        })
+        .catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [compose.to, compose.cc, compose.subject, compose.body, compose.attachments]);
+
+  const addFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const current = useUi.getState().compose;
+    if (!current) return;
+    const existing = current.attachments.reduce(
+      (n, a) => n + a.dataBase64.length * 0.75,
+      0
+    );
+    let total = existing;
+    const added: MailAttachment[] = [];
+    for (const f of Array.from(files)) {
+      total += f.size;
+      if (total > MAX_ATTACH_TOTAL) {
+        setError("Attachments exceed the 25 MB limit.");
+        break;
+      }
+      added.push(await readFileB64(f));
+    }
+    if (added.length) {
+      patch({ attachments: [...current.attachments, ...added] });
+    }
+  };
 
   useEffect(() => {
     const send = async (markDone: boolean) => {
@@ -138,24 +211,11 @@ export function Compose() {
       setSending(true);
       setError(null);
       try {
-        const bodyText = [c.body, c.signature, c.quote]
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .join("\n\n");
         // Queue with a 10s fuse instead of sending immediately — that fuse
         // IS the Undo Send window (Z pulls the draft back).
-        const outboxId = await backend.queueMail(
-          {
-            threadId: c.threadId,
-            to,
-            cc: splitAddresses(c.cc),
-            subject: c.subject || "(no subject)",
-            bodyText,
-            replyAll: c.mode === "replyAll",
-          },
-          UNDO_SEND_MS
-        );
-        const saved = { ...c };
+        const outboxId = await backend.queueMail(outgoingFromCompose(c), UNDO_SEND_MS);
+        if (c.draftId !== null) void backend.deleteDraft(c.draftId).catch(() => {});
+        const saved = { ...c, draftId: null };
         useUi.getState().closeCompose();
         pushUndo({
           label: "Send",
@@ -214,7 +274,7 @@ export function Compose() {
             <span className="kbd">{formatKeyExpr(shortcutHint("compose.ai"))}</span>{" "}
             write with AI ·{" "}
             <span className="kbd">{formatKeyExpr(shortcutHint("compose.send"))}</span>{" "}
-            send · <span className="kbd">Esc</span> discard
+            send · <span className="kbd">Esc</span> saves draft
           </span>
         </div>
 
@@ -253,6 +313,33 @@ export function Compose() {
           placeholder="Write, or press Ctrl+J to draft with AI…"
         />
 
+        {compose.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 border-t border-line px-4 py-2">
+            {compose.attachments.map((a, i) => (
+              <span
+                key={`${a.filename}-${i}`}
+                className="flex items-center gap-1.5 rounded-md border border-line-strong bg-raised py-1 pl-2.5 pr-1 text-[12px] text-ink-2"
+              >
+                📎 {a.filename}
+                <span className="text-ink-3">
+                  {fmtSize(Math.round(a.dataBase64.length * 0.75))}
+                </span>
+                <button
+                  onClick={() =>
+                    patch({
+                      attachments: compose.attachments.filter((_, j) => j !== i),
+                    })
+                  }
+                  className="rounded px-1 text-ink-3 hover:bg-hover hover:text-ink"
+                  title="Remove attachment"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         {compose.signature && (
           <div
             className="whitespace-pre-wrap border-t border-line px-4 py-2 text-[12.5px] leading-relaxed text-ink-2"
@@ -290,8 +377,30 @@ export function Compose() {
             {sending ? "Sending…" : "Send"}
           </button>
           <button
-            onClick={() => useUi.getState().closeCompose()}
+            onClick={() => fileRef.current?.click()}
             className="rounded-md px-3 py-1.5 text-[13px] text-ink-2 hover:bg-hover"
+            title="Attach files"
+          >
+            📎 Attach
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <button
+            onClick={() => {
+              const c = useUi.getState().compose;
+              if (c?.draftId != null) void backend.deleteDraft(c.draftId).catch(() => {});
+              useUi.getState().closeCompose();
+            }}
+            className="rounded-md px-3 py-1.5 text-[13px] text-ink-2 hover:bg-hover"
+            title="Delete the draft and close (Esc keeps it)"
           >
             Discard
           </button>

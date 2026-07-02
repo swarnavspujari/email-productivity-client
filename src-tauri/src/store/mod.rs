@@ -77,6 +77,18 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
     // v0.3 migrations: soft trash/spam, unsubscribe header, scheduled sends.
     let _ = conn.execute("ALTER TABLE threads ADD COLUMN hidden TEXT", []);
     let _ = conn.execute("ALTER TABLE messages ADD COLUMN list_unsubscribe TEXT", []);
+    // v0.5 migrations: inline-image cids + cached attachment bytes, drafts.
+    let _ = conn.execute("ALTER TABLE attachments ADD COLUMN content_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE attachments ADD COLUMN data BLOB", []);
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS outbox (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +186,7 @@ pub fn default_settings() -> Settings {
         ("goto.done", "g e"),
         ("goto.reminders", "g h"),
         ("goto.starred", "g s"),
+        ("goto.drafts", "g d"),
         ("compose.ai", "mod+j"),
         ("compose.send", "mod+enter"),
         ("compose.sendDone", "mod+shift+enter"),
@@ -414,12 +427,13 @@ pub fn get_messages(conn: &Connection, thread_id: &str) -> Result<Vec<Message>, 
 }
 
 /// One message row bound for upsert: (message, rfc Message-ID,
-/// List-Unsubscribe header, attachments as (meta, remote id, cached text)).
+/// List-Unsubscribe header, attachments as (meta, remote id, Content-ID,
+/// cached text)).
 pub type MsgRow = (
     Message,
     Option<String>,
     Option<String>,
-    Vec<(Attachment, Option<String>, Option<String>)>,
+    Vec<(Attachment, Option<String>, Option<String>, Option<String>)>,
 );
 
 /// Upsert a thread and its messages (used by both mock seeding and Gmail sync).
@@ -492,12 +506,12 @@ pub fn upsert_thread(
             .map_err(|e| e.to_string())?;
         }
 
-        for (a, remote_id, text) in atts {
+        for (a, remote_id, content_id, text) in atts {
             conn.execute(
-                "INSERT INTO attachments (id, message_id, filename, mime_type, size_bytes, remote_id, text_content)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)
+                "INSERT INTO attachments (id, message_id, filename, mime_type, size_bytes, remote_id, content_id, text_content)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
                  ON CONFLICT(id) DO NOTHING",
-                params![a.id, a.message_id, a.filename, a.mime_type, a.size_bytes, remote_id, text],
+                params![a.id, a.message_id, a.filename, a.mime_type, a.size_bytes, remote_id, content_id, text],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -599,6 +613,121 @@ pub fn unsubscribe_header(conn: &Connection, thread_id: &str) -> Option<String> 
     )
     .ok()
     .flatten()
+}
+
+// ---------------------------------------------------------------- attachments
+
+/// Everything needed to fetch/serve one attachment's bytes.
+pub struct AttachmentRow {
+    pub message_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub remote_id: Option<String>,
+    pub data: Option<Vec<u8>>,
+}
+
+pub fn get_attachment(conn: &Connection, id: &str) -> Option<AttachmentRow> {
+    conn.query_row(
+        "SELECT message_id, filename, mime_type, remote_id, data FROM attachments WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(AttachmentRow {
+                message_id: r.get(0)?,
+                filename: r.get(1)?,
+                mime_type: r.get(2)?,
+                remote_id: r.get(3)?,
+                data: r.get(4)?,
+            })
+        },
+    )
+    .ok()
+}
+
+pub fn set_attachment_data(conn: &Connection, id: &str, data: &[u8]) -> Result<(), String> {
+    conn.execute("UPDATE attachments SET data = ?2 WHERE id = ?1", params![id, data])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Inline-image candidates for a message: (attachment id, Content-ID,
+/// mime type, remote id, cached bytes present).
+pub fn inline_cids(conn: &Connection, message_id: &str) -> Vec<(String, String, String, Option<String>, bool)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, content_id, mime_type, remote_id, data IS NOT NULL
+         FROM attachments WHERE message_id = ?1 AND content_id IS NOT NULL",
+    ) else {
+        return vec![];
+    };
+    stmt.query_map(params![message_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, i64>(4)? != 0,
+        ))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn attachment_data(conn: &Connection, id: &str) -> Option<Vec<u8>> {
+    conn.query_row("SELECT data FROM attachments WHERE id = ?1", params![id], |r| {
+        r.get::<_, Option<Vec<u8>>>(0)
+    })
+    .ok()
+    .flatten()
+}
+
+// ---------------------------------------------------------------- drafts
+
+pub fn draft_save(
+    conn: &Connection,
+    id: Option<i64>,
+    account_id: &str,
+    payload: &str,
+    now_ms: i64,
+) -> Result<i64, String> {
+    match id {
+        Some(id) => {
+            let n = conn
+                .execute(
+                    "UPDATE drafts SET payload = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id, payload, now_ms],
+                )
+                .map_err(|e| e.to_string())?;
+            if n > 0 {
+                return Ok(id);
+            }
+            // row vanished (sent elsewhere) — recreate rather than lose work
+            draft_save(conn, None, account_id, payload, now_ms)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO drafts (account_id, payload, updated_at) VALUES (?1, ?2, ?3)",
+                params![account_id, payload, now_ms],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+}
+
+pub fn draft_list(conn: &Connection, account_id: &str) -> Vec<(i64, String, i64)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, payload, updated_at FROM drafts WHERE account_id = ?1 ORDER BY updated_at DESC LIMIT 100",
+    ) else {
+        return vec![];
+    };
+    stmt.query_map(params![account_id], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn draft_delete(conn: &Connection, id: i64) {
+    let _ = conn.execute("DELETE FROM drafts WHERE id = ?1", params![id]);
 }
 
 // ---------------------------------------------------------------- outbox

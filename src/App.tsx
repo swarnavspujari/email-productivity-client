@@ -15,6 +15,7 @@ import { MovePicker } from "@/features/pickers/MovePicker";
 import { ZeroSweep } from "@/features/pickers/ZeroSweep";
 import { SendLaterPicker } from "@/features/pickers/SendLaterPicker";
 import { SnippetPicker } from "@/features/pickers/SnippetPicker";
+import { DraftsPicker } from "@/features/pickers/DraftsPicker";
 import { Celebration } from "@/features/zero/Celebration";
 import { SearchScreen } from "@/features/search/SearchScreen";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -130,6 +131,7 @@ export default function App() {
         {picker === "zeroSweep" && <ZeroSweep />}
         {picker === "sendLater" && <SendLaterPicker />}
         {picker === "snippet" && <SnippetPicker />}
+        {picker === "drafts" && <DraftsPicker />}
         {celebration && <Celebration />}
 
         {toast && (
