@@ -91,6 +91,8 @@ Every shortcut is remappable in **Settings → Shortcuts**. Full list + smoke te
 ## Docs
 
 - [docs/SETUP.md](docs/SETUP.md) — full Windows setup incl. creating the Gmail OAuth client
+- [docs/GOOGLE_OAUTH.md](docs/GOOGLE_OAUTH.md) — publishing the consent screen, what testers see, verification path
+- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) — installers, auto-update, code signing
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module boundaries, data flow, security model
 - [docs/AI_PROVIDERS.md](docs/AI_PROVIDERS.md) — keys, models, endpoints
 - [docs/SHORTCUTS.md](docs/SHORTCUTS.md) — cheat sheet + smoke-test checklist
