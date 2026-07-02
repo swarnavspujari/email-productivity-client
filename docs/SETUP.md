@@ -24,7 +24,13 @@ The first Rust build compiles the whole dependency tree (several minutes). After
 
 ## 3. Create the Gmail OAuth client (one time, ~5 minutes)
 
-ZenBox talks to Gmail directly from your machine, so you bring your own OAuth client. Nothing about this client is shared with anyone.
+> **Beta testers can skip this whole section.** Installer builds from GitHub
+> Releases carry a shared beta OAuth client — the welcome screen's **Connect
+> Gmail** just works (you'll see Google's "unverified app" notice; see
+> [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md)). Creating your own client is only for
+> building from source or if you prefer your own quota.
+
+ZenBox talks to Gmail directly from your machine, so you can bring your own OAuth client. Nothing about this client is shared with anyone.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with any Google account (it does **not** have to be the mail account you'll connect).
 2. Top bar → project selector → **New project**. Name it e.g. `zenbox-mail`, Create, and make sure it's selected.
@@ -39,13 +45,14 @@ ZenBox talks to Gmail directly from your machine, so you bring your own OAuth cl
 6. In ZenBox: **Settings → Account** → paste both → **Connect Gmail**. Your browser opens Google's consent page; approve access. You'll see a "Connected" page, and your inbox syncs in.
 
 Notes:
-- The requested scope is `gmail.modify` — read, send, archive, label. ZenBox cannot permanently delete mail or touch account settings.
+- Requested scopes: `gmail.modify` (read, send, archive, label — no permanent delete, no account settings), `openid email profile` (your name + photo in the header), and `calendar.readonly` (the calendar side panel). Enable the **Google Calendar API** in the same project if you want the panel.
+- Accounts connected before v0.6 were granted only `gmail.modify` — **Disconnect → Connect Gmail** once to grant the new scopes (profile photo and calendar appear after that).
 - Credentials are stored in the **Windows Credential Manager**, never on disk or in the repo.
 - Google shows an "unverified app" warning while your consent screen is in Testing status — that's your own app; click *Continue*.
 
 ## 4. Add more accounts
 
-Settings → **Account** → *Add a Gmail account*. The same OAuth client serves every Gmail account — once it's stored, leave the fields blank and hit **Connect**; a browser consent opens for the new address (add it as a **Test user** on the consent screen first). Switch accounts with **Ctrl+1…9**; slots follow the order in Settings (reorder to reassign).
+Settings → **Account** → *Add a Gmail account*. The same OAuth client serves every Gmail account — once it's stored, leave the fields blank and hit **Connect**; a browser consent opens for the new address (add it as a **Test user** on the consent screen first). Switch accounts with **Alt+1…9**; slots follow the order in Settings (reorder to reassign).
 
 ### Outlook (coming in v0.4)
 
