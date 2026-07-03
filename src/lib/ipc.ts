@@ -52,6 +52,8 @@ export interface Backend {
 
   listThreads(view: MailView): Promise<Thread[]>;
   getThread(id: ThreadId): Promise<Message[]>;
+  /** Heal a thread whose message bodies came back blank; returns updated messages. */
+  refetchMessageBody(id: ThreadId): Promise<Message[]>;
   archiveThread(id: ThreadId): Promise<void>;
   moveToInbox(id: ThreadId): Promise<void>;
   /** Soft-hide: trash or spam. Undo via restoreThread. */
@@ -148,6 +150,9 @@ class TauriBackend implements Backend {
   }
   getThread(id: ThreadId) {
     return invoke<Message[]>("get_thread", { threadId: id });
+  }
+  refetchMessageBody(id: ThreadId) {
+    return invoke<Message[]>("refetch_message_body", { threadId: id });
   }
   archiveThread(id: ThreadId) {
     return invoke<void>("archive_thread", { threadId: id });

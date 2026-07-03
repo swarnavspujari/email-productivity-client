@@ -243,6 +243,10 @@ export class MockBackend implements Backend {
     this.patch(id, { unread: false });
     return msgs;
   }
+  async refetchMessageBody(id: ThreadId): Promise<Message[]> {
+    // demo fixtures always carry a body — nothing to heal
+    return this.messages.get(id) ?? [];
+  }
 
   async archiveThread(id: ThreadId) {
     this.patch(id, { inInbox: false, snoozedUntil: null });

@@ -118,13 +118,25 @@ export const useMail = create<MailState>((set, get) => ({
   },
 
   openThread: async (id) => {
+    // switch immediately so J/K feels instant; messages populate right after
+    set({ openThreadId: id, openMessages: [] });
     const msgs = await backend.getThread(id);
-    set({ openThreadId: id, openMessages: msgs });
-    // reading clears unread locally
+    if (get().openThreadId !== id) return; // user already moved on
     set((s) => ({
+      openMessages: msgs,
+      // reading clears unread locally
       inbox: s.inbox.map((t) => (t.id === id ? { ...t, unread: false } : t)),
       done: s.done.map((t) => (t.id === id ? { ...t, unread: false } : t)),
     }));
+    // heal any blank-body message (large HTML behind attachmentId, frozen row…)
+    if (msgs.some((m) => !m.bodyHtml && !m.bodyText.trim())) {
+      void backend
+        .refetchMessageBody(id)
+        .then((healed) => {
+          if (get().openThreadId === id) set({ openMessages: healed });
+        })
+        .catch(() => {});
+    }
   },
 
   refreshOpenThread: async () => {

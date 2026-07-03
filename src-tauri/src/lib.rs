@@ -520,6 +520,51 @@ fn spawn_thread_backfill(app: AppHandle, thread_id: String, account: Option<Stri
     });
 }
 
+/// Heal messages persisted with an empty body (body_text='' AND body_html IS
+/// NULL) — e.g. a large HTML body that lived behind body.attachmentId on first
+/// sync, or a row an older build froze. Refetches the thread (hydrating
+/// attachment-hosted bodies) so upsert re-parses and fills it, then returns the
+/// freshly sanitized messages. No network for mock threads or when nothing is
+/// blank. The frontend calls this only when it sees a blank card, and applies
+/// the result only if the user is still on the thread. (BUG 5 empty-body)
+#[tauri::command]
+async fn refetch_message_body(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<Vec<Message>, String> {
+    valid_id(&thread_id)?;
+    let (has_empty, account) = {
+        let conn = state.db.lock().unwrap();
+        let has_empty: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 AND body_text = '' AND body_html IS NULL)",
+                [thread_id.as_str()],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n != 0)
+            .unwrap_or(false);
+        (has_empty, store::account_of_thread(&conn, &thread_id))
+    };
+    if has_empty && !is_mock_id(&thread_id) {
+        if let Some(account) = account {
+            let mut sessions = state.gmail.lock().await;
+            if let Some(sess) = sessions.get_mut(&account) {
+                let _ = mail::sync::refetch_thread(&state.http, sess, &state.db, &account, &thread_id).await;
+            }
+        }
+    }
+    let mut msgs = {
+        let conn = state.db.lock().unwrap();
+        store::get_messages(&conn, &thread_id)?
+    };
+    for m in msgs.iter_mut() {
+        let Some(html) = m.body_html.clone() else { continue };
+        let cid_map = cached_cid_map(&state, &m.id, &html);
+        m.body_html = Some(mail::render::sanitize_email_html(&html, &cid_map));
+    }
+    Ok(msgs)
+}
+
 // ---------------------------------------------------------------- attachments
 
 /// Attachment bytes from cache, demo fixture text, or Gmail (cached after).
@@ -1618,6 +1663,7 @@ pub fn run() {
             resync_account,
             list_threads,
             get_thread,
+            refetch_message_body,
             search_threads,
             list_labels,
             archive_thread,

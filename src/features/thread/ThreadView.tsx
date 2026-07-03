@@ -183,6 +183,9 @@ function MessageCard({
   const html = m.bodyHtml;
   const htmlHasQuote = html !== null && QUOTE_MARKERS.some((q) => html.includes(q));
   const hasQuoteToggle = html ? htmlHasQuote : quoted !== null;
+  // No HTML and no text = a body that didn't come through on first sync;
+  // openThread refetches it in the background (see stores/mail openThread).
+  const isEmpty = !html && !m.bodyText.trim();
 
   if (!expanded) {
     return (
@@ -224,6 +227,11 @@ function MessageCard({
 
       {html ? (
         <HtmlBody html={html} showQuote={showQuote} />
+      ) : isEmpty ? (
+        <div className="flex items-center gap-2 px-4 py-3 text-[13px] italic text-ink-3">
+          <span className="zb-spin inline-block h-3 w-3 rounded-full border-2 border-line-strong border-t-accent" />
+          Loading message…
+        </div>
       ) : (
         <div className="selectable whitespace-pre-wrap px-4 py-3 leading-relaxed text-ink">
           {showQuote && quoted ? `${main}\n${quoted}` : main}
