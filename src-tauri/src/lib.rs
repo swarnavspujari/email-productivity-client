@@ -372,6 +372,32 @@ async fn sync_now(app: AppHandle, state: State<'_, AppState>) -> Result<(), Stri
     Ok(())
 }
 
+/// Repair: forget the incremental baseline and per-thread historyIds, then
+/// resync — the reconcile pass then refetches and re-parses every listed thread,
+/// healing messages an older build froze with missing HTML / empty bodies.
+/// Local-only state (snoozes, read/hidden flags) is preserved.
+#[tauri::command]
+async fn resync_account(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let emails: Vec<String> = state.gmail.lock().await.keys().cloned().collect();
+    if emails.is_empty() {
+        return Ok(()); // demo mode: nothing to resync
+    }
+    {
+        let conn = state.db.lock().unwrap();
+        for email in &emails {
+            conn.execute("DELETE FROM kv WHERE key = ?1", [format!("history:{email}")]).ok();
+            store::reset_history(&conn, email)?;
+        }
+    }
+    let mut sessions = state.gmail.lock().await;
+    for (email, session) in sessions.iter_mut() {
+        mail::sync::full_sync(&state.http, session, &state.db, email).await?;
+    }
+    drop(sessions);
+    let _ = app.emit("mail:updated", ());
+    Ok(())
+}
+
 // ---------------------------------------------------------------- reading
 
 #[tauri::command]
@@ -1419,6 +1445,7 @@ pub fn run() {
             start_oauth,
             disconnect_account,
             sync_now,
+            resync_account,
             list_threads,
             get_thread,
             search_threads,

@@ -47,6 +47,8 @@ export interface Backend {
   startOauth(clientId: string, clientSecret: string): Promise<AccountsState>;
   disconnect(email: string): Promise<AccountsState>;
   syncNow(): Promise<void>;
+  /** Repair: reconcile from scratch to re-parse frozen/empty message bodies. */
+  resyncAccount(): Promise<void>;
 
   listThreads(view: MailView): Promise<Thread[]>;
   getThread(id: ThreadId): Promise<Message[]>;
@@ -133,6 +135,9 @@ class TauriBackend implements Backend {
   }
   syncNow() {
     return invoke<void>("sync_now");
+  }
+  resyncAccount() {
+    return invoke<void>("resync_account");
   }
   listThreads(view: MailView) {
     return invoke<Thread[]>("list_threads", { view });

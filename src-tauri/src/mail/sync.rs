@@ -185,7 +185,7 @@ async fn refetch_thread(
     account_id: &str,
     id: &str,
 ) -> Result<bool, String> {
-    let v = match session.get_thread_full(http, id).await {
+    let mut v = match session.get_thread_full(http, id).await {
         Ok(v) => v,
         Err(e) if e.contains("(404") => {
             // gone server-side (permanent delete) — drop it locally too
@@ -198,6 +198,10 @@ async fn refetch_thread(
         }
         Err(e) => return Err(e),
     };
+
+    // Pull in large text bodies stored behind body.attachmentId so the parse
+    // below captures them (otherwise those messages persist an empty body).
+    crate::mail::gmail::hydrate_body_data(http, session, &mut v).await;
 
     let history_id = v["historyId"].as_str().unwrap_or_default().to_string();
     let empty = vec![];

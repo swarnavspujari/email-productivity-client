@@ -217,6 +217,10 @@ export class MockBackend implements Backend {
   async syncNow() {
     this.wakeDueSnoozes();
   }
+  async resyncAccount() {
+    // demo fixtures carry real HTML already — nothing to repair
+    this.wakeDueSnoozes();
+  }
 
   async listThreads(view: MailView): Promise<Thread[]> {
     const byDate = (a: Thread, b: Thread) => b.lastDate - a.lastDate;

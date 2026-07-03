@@ -198,6 +198,7 @@ pub fn default_settings() -> Settings {
         ("back", "escape"),
         ("inbox.zeroSweep", ""),
         ("sync.now", ""),
+        ("sync.resync", ""),
         ("settings.open", "mod+,"),
         // Alt+N leaves Ctrl+N free for browser-muscle-memory shortcuts and
         // matches the user's preference (v0.6 change; mod+N was the default
@@ -478,16 +479,34 @@ pub fn upsert_thread(
     )
     .map_err(|e| e.to_string())?;
 
+    let mut any_healed = false;
     for (m, rfc_id, list_unsub, atts) in msgs {
-        let is_new = conn
-            .query_row("SELECT 1 FROM messages WHERE id = ?1", params![m.id], |_| Ok(()))
-            .is_err();
+        // The current body tells us (a) new vs. existing and (b) whether this
+        // upsert heals a previously empty/frozen body — which the search index
+        // must then be told about (its per-message insert only fires for new rows).
+        let existing_body: Option<String> = conn
+            .query_row("SELECT body_text FROM messages WHERE id = ?1", params![m.id], |r| r.get(0))
+            .ok();
+        let is_new = existing_body.is_none();
         conn.execute(
             "INSERT INTO messages (id, thread_id, from_addr, from_name, to_addrs, cc_addrs,
                                    subject, snippet, body_text, body_html, date, unread,
                                    rfc_message_id, list_unsubscribe)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
-             ON CONFLICT(id) DO UPDATE SET unread=excluded.unread",
+             ON CONFLICT(id) DO UPDATE SET
+                unread=excluded.unread,
+                subject=excluded.subject,
+                snippet=excluded.snippet,
+                to_addrs=excluded.to_addrs,
+                cc_addrs=excluded.cc_addrs,
+                rfc_message_id=excluded.rfc_message_id,
+                list_unsubscribe=excluded.list_unsubscribe,
+                -- Gmail message bodies are immutable, so a non-empty re-parse is
+                -- always the correct value. This heals rows an older build (or a
+                -- first sync that couldn't fetch the HTML) froze with NULL/empty
+                -- HTML — but never clobber a good cached body with an empty one.
+                body_text=CASE WHEN excluded.body_text <> '' THEN excluded.body_text ELSE messages.body_text END,
+                body_html=COALESCE(excluded.body_html, messages.body_html)",
             params![
                 m.id,
                 m.thread_id,
@@ -513,6 +532,10 @@ pub fn upsert_thread(
                 params![m.thread_id, m.subject, format!("{} {}", m.from_name, m.from), m.body_text],
             )
             .map_err(|e| e.to_string())?;
+        } else if existing_body.as_deref().map(str::trim).unwrap_or("").is_empty()
+            && !m.body_text.trim().is_empty()
+        {
+            any_healed = true;
         }
 
         for (a, remote_id, content_id, text) in atts {
@@ -521,6 +544,20 @@ pub fn upsert_thread(
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
                  ON CONFLICT(id) DO NOTHING",
                 params![a.id, a.message_id, a.filename, a.mime_type, a.size_bytes, remote_id, content_id, text],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Rebuild this thread's FTS rows when a body healed, so recovered text is
+    // searchable. `msgs` is the full thread on the sync/seed path.
+    if any_healed {
+        conn.execute("DELETE FROM mail_fts WHERE thread_id = ?1", params![t.id])
+            .map_err(|e| e.to_string())?;
+        for (m, _, _, _) in msgs {
+            conn.execute(
+                "INSERT INTO mail_fts (thread_id, subject, from_text, body) VALUES (?1,?2,?3,?4)",
+                params![m.thread_id, m.subject, format!("{} {}", m.from_name, m.from), m.body_text],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -806,6 +843,19 @@ pub fn delete_thread(conn: &Connection, id: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM threads WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Clear the per-thread `history_id` for an account so the next reconcile
+/// treats every listed thread as changed and refetches it — used by the resync
+/// repair to re-parse and heal frozen message bodies without dropping local
+/// state (snoozes, read/hidden flags survive).
+pub fn reset_history(conn: &Connection, account_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE threads SET history_id = NULL WHERE account_id = ?1",
+        params![account_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

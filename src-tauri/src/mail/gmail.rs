@@ -2,11 +2,22 @@
 use crate::mail::oauth;
 use crate::secrets;
 use crate::types::*;
+use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
+use base64::engine::DecodePaddingMode;
 use base64::Engine;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 const BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
+
+/// Gmail returns message/attachment bytes as base64url. Most parts are unpadded
+/// but some carry '=' padding, on which the old `URL_SAFE_NO_PAD` engine errored
+/// — silently dropping the body via `decode(..).ok()?`. This engine decodes
+/// either way (padding-indifferent) and encodes with padding.
+const B64URL: GeneralPurpose = GeneralPurpose::new(
+    &base64::alphabet::URL_SAFE,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 
 pub struct GmailSession {
     #[allow(dead_code)] // kept for multi-account support (P1)
@@ -302,11 +313,75 @@ impl GmailSession {
             )
             .await?;
         let data = v["data"].as_str().ok_or("attachment had no data")?;
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
+        B64URL
             .decode(data)
             .map_err(|_| "attachment data was not valid base64".to_string())
     }
+}
 
+/// Large text bodies sometimes arrive with an empty `body.data` and the bytes
+/// behind `body.attachmentId` (no filename, no Content-ID). The sync parser only
+/// reads `body.data`, so those messages render blank / fall back to nothing.
+/// Fetch the bytes for any such text/html or text/plain part and inline them as
+/// base64url `body.data`, so the normal parser captures them as the body.
+///
+/// Runs on the sync path (async, has the session); capped so a runaway body
+/// can't stall a sync. Best-effort: parts that fail to fetch stay empty and heal
+/// later via the on-open body refetch.
+pub async fn hydrate_body_data(
+    http: &reqwest::Client,
+    session: &mut GmailSession,
+    thread_json: &mut Value,
+) {
+    const MAX_BODY_BYTES: usize = 5_000_000;
+    let Some(messages) = thread_json["messages"].as_array_mut() else {
+        return;
+    };
+    for msg in messages.iter_mut() {
+        let mid = msg["id"].as_str().unwrap_or_default().to_string();
+        if mid.is_empty() {
+            continue;
+        }
+        let mut paths: Vec<(Vec<usize>, String)> = vec![];
+        collect_body_att_paths(&msg["payload"], &[], &mut paths);
+        for (path, att_id) in paths {
+            let Ok(bytes) = session.get_attachment_bytes(http, &mid, &att_id).await else {
+                continue;
+            };
+            if bytes.is_empty() || bytes.len() > MAX_BODY_BYTES {
+                continue;
+            }
+            // navigate to the part by child-index path and inline the bytes
+            let mut cur = &mut msg["payload"];
+            for idx in &path {
+                cur = &mut cur["parts"][*idx];
+            }
+            cur["body"]["data"] = Value::String(B64URL.encode(&bytes));
+        }
+    }
+}
+
+/// Depth-first collect (path-of-child-indices, attachmentId) for text/html or
+/// text/plain body parts whose `body.data` is empty but that carry an
+/// `attachmentId` — i.e. the message body lives behind an attachment fetch.
+fn collect_body_att_paths(part: &Value, prefix: &[usize], out: &mut Vec<(Vec<usize>, String)>) {
+    let mime = part["mimeType"].as_str().unwrap_or_default();
+    let filename = part["filename"].as_str().unwrap_or_default();
+    let has_cid = header(part, "Content-ID").or_else(|| header(part, "Content-Id")).is_some();
+    let is_body = filename.is_empty() && !has_cid && (mime == "text/html" || mime == "text/plain");
+    let data_empty = part["body"]["data"].as_str().map(str::is_empty).unwrap_or(true);
+    if is_body && data_empty {
+        if let Some(att_id) = part["body"]["attachmentId"].as_str() {
+            out.push((prefix.to_vec(), att_id.to_string()));
+        }
+    }
+    if let Some(children) = part["parts"].as_array() {
+        for (i, child) in children.iter().enumerate() {
+            let mut p = prefix.to_vec();
+            p.push(i);
+            collect_body_att_paths(child, &p, out);
+        }
+    }
 }
 
 // ------------------------------------------------------------- MIME parsing
@@ -367,10 +442,8 @@ fn split_addresses(raw: &str) -> Vec<String> {
 }
 
 fn decode_body(part: &Value) -> Option<String> {
-    let data = part["body"]["data"].as_str()?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(data)
-        .ok()?;
+    let data = part["body"]["data"].as_str().filter(|s| !s.is_empty())?;
+    let bytes = B64URL.decode(data).ok()?;
     Some(String::from_utf8_lossy(&bytes).to_string())
 }
 

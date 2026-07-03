@@ -67,6 +67,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   back: "escape",
   "inbox.zeroSweep": "",
   "sync.now": "",
+  "sync.resync": "",
   "settings.open": "mod+,",
   // Alt+N (was mod+N through v0.5) — keeps Ctrl+N for browser muscle memory
   "account.1": "alt+1",

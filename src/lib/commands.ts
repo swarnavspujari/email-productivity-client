@@ -587,6 +587,21 @@ export function allCommands(): Command[] {
       },
     },
     {
+      id: "sync.resync",
+      title: "Repair Mail (resync from scratch)",
+      group: "General",
+      run: async () => {
+        ui().showToast("Repairing mail…");
+        try {
+          await backend.resyncAccount();
+          await mail().refresh();
+          ui().showToast("Mail repaired — reopen a message to see fixed formatting");
+        } catch (e) {
+          ui().showToast(`Repair failed: ${String(e)}`);
+        }
+      },
+    },
+    {
       id: "settings.open",
       title: "Settings",
       group: "General",
