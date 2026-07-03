@@ -113,6 +113,8 @@ export interface Backend {
   onThreadImages(cb: (threadId: string) => void): () => void;
   /** Fires when a background triage sync to Gmail failed (message). */
   onTriageError(cb: (message: string) => void): () => void;
+  /** General user-facing notice from the core (e.g. a partial OAuth grant). */
+  onNotice(cb: (message: string) => void): () => void;
 }
 
 export const isTauri =
@@ -294,6 +296,12 @@ class TauriBackend implements Backend {
   }
   onTriageError(cb: (message: string) => void): () => void {
     const un = listen<string>("triage:error", (e) => cb(e.payload));
+    return () => {
+      void un.then((f) => f());
+    };
+  }
+  onNotice(cb: (message: string) => void): () => void {
+    const un = listen<string>("app:notice", (e) => cb(e.payload));
     return () => {
       void un.then((f) => f());
     };

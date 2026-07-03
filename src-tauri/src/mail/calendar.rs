@@ -20,14 +20,7 @@ pub async fn list_events(
     let cal_list = session
         .get_json(http, &format!("{BASE}/users/me/calendarList?maxResults=50"))
         .await
-        .map_err(|e| {
-            if e.contains("(403") {
-                // scope missing: account connected before calendar.readonly
-                "calendar access not granted — disconnect and reconnect Gmail to enable it".to_string()
-            } else {
-                e
-            }
-        })?;
+        .map_err(|e| classify_calendar_error(&e))?;
     let empty = vec![];
     let calendars: Vec<(String, String, Option<String>)> = cal_list["items"]
         .as_array()
@@ -74,6 +67,36 @@ pub async fn list_events(
     }
     events.sort_by_key(|e| e.start_ms);
     Ok(events)
+}
+
+/// Turn a raw Calendar 403 into actionable guidance. A 403 has (at least) three
+/// distinct causes; the response body (preserved by gmail::get_json) tells them
+/// apart. Messages keep distinct substrings ("enable" vs "reconnect") so
+/// CalendarPanel can style the guidance. Non-403 errors pass through unchanged.
+fn classify_calendar_error(e: &str) -> String {
+    if !e.contains("(403") {
+        return e.to_string();
+    }
+    let api_disabled = e.contains("accessNotConfigured")
+        || e.contains("has not been used in project")
+        || e.contains("SERVICE_DISABLED");
+    let scope_missing = e.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+        || e.contains("insufficientPermissions")
+        || e.contains("insufficient");
+    if api_disabled {
+        "The Google Calendar API isn't enabled for this app's Google Cloud project. \
+         Enable it at console.cloud.google.com → APIs & Services → Library → \
+         Google Calendar API → Enable, then reopen the panel."
+            .to_string()
+    } else if scope_missing {
+        "Calendar access wasn't granted for this account — disconnect and reconnect \
+         Gmail, and check the Calendar box on Google's consent screen."
+            .to_string()
+    } else {
+        "Calendar access was denied (403). If you just turned on the API, wait a \
+         minute and try again."
+            .to_string()
+    }
 }
 
 /// Google event times: {"dateTime": rfc3339} for timed, {"date": "YYYY-MM-DD"}

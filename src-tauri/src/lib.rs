@@ -129,6 +129,13 @@ async fn start_oauth(
     secrets::set(secrets::GMAIL_CLIENT_SECRET, &client_secret)?;
 
     let outcome = mail::oauth::run_flow(&state.http, &app, &client_id, &client_secret).await?;
+    // Non-fatal: warn if Gmail connected but Google skipped calendar.readonly, so
+    // the user fixes it now instead of hitting a scope 403 in the calendar panel.
+    let calendar_missing = outcome
+        .granted_scope
+        .as_deref()
+        .map(|scope| !scope.contains("calendar.readonly"))
+        .unwrap_or(false);
     let email = GmailSession::profile_email(&state.http, &outcome.access_token).await?;
     secrets::set(&secrets::gmail_refresh_entry(&email), &outcome.refresh_token)?;
 
@@ -163,6 +170,12 @@ async fn start_oauth(
     let session = GmailSession::new_connected(email.clone(), outcome.access_token, outcome.expires_in)
         .ok_or("keychain readback failed")?;
     state.gmail.lock().await.insert(email, session);
+    if calendar_missing {
+        let _ = app.emit(
+            "app:notice",
+            "Connected, but Calendar access wasn't granted — run Connect Gmail again and check the Calendar box.".to_string(),
+        );
+    }
     sync_in_background(app);
     Ok(accounts)
 }
@@ -173,6 +186,19 @@ async fn disconnect_account(
     state: State<'_, AppState>,
     email: String,
 ) -> Result<AccountsState, String> {
+    // Revoke server-side BEFORE deleting the local token, so the next Connect
+    // starts from a clean grant and reliably re-issues the full scope set
+    // (incl. calendar.readonly). Best-effort — a failed revoke still disconnects.
+    if let Some(rt) = secrets::get(&secrets::gmail_refresh_entry(&email))
+        .or_else(|| secrets::get(secrets::GMAIL_REFRESH_TOKEN_LEGACY))
+    {
+        let _ = state
+            .http
+            .post("https://oauth2.googleapis.com/revoke")
+            .form(&[("token", rt.as_str())])
+            .send()
+            .await;
+    }
     secrets::delete(&secrets::gmail_refresh_entry(&email));
     secrets::delete(secrets::GMAIL_REFRESH_TOKEN_LEGACY);
     state.gmail.lock().await.remove(&email);

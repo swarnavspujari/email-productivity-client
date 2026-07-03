@@ -19,14 +19,22 @@ does *not* require verification up front.
 
 ## One-time console steps (you must do these)
 
-1. <https://console.cloud.google.com/apis/credentials/consent> → project
+1. **Enable the APIs the app calls.** ☰ → *APIs & Services* → *Library*, in
+   project `zenbox-mail`, and **Enable** both:
+   - **Gmail API**
+   - **Google Calendar API** — easy to miss, and this is the one that bites:
+     until it's enabled the calendar panel returns a 403
+     (`accessNotConfigured` / "has not been used in project …") for **every**
+     tester, no matter how many times they reconnect. Enabling it here fixes it
+     for all testers at once. (Newly enabled APIs can take a minute to propagate.)
+2. <https://console.cloud.google.com/apis/credentials/consent> → project
    `zenbox-mail`.
-2. Confirm **User type: External**.
-3. Fill the required fields if empty: app name "ZenBox Mail", user support
+3. Confirm **User type: External**.
+4. Fill the required fields if empty: app name "ZenBox Mail", user support
    email, developer contact email. (Logo optional — adding one *triggers*
    brand verification review; skip it for now.)
-4. Click **Publish app** → confirm "Push to production".
-5. That's it. No submission for verification yet.
+5. Click **Publish app** → confirm "Push to production".
+6. That's it. No submission for verification yet.
 
 ## What a tester experiences (send them this, verbatim)
 

@@ -34,7 +34,7 @@ ZenBox talks to Gmail directly from your machine, so you can bring your own OAut
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with any Google account (it does **not** have to be the mail account you'll connect).
 2. Top bar → project selector → **New project**. Name it e.g. `zenbox-mail`, Create, and make sure it's selected.
-3. **Enable the Gmail API:** ☰ menu → *APIs & Services* → *Library* → search **Gmail API** → Enable.
+3. **Enable the APIs:** ☰ menu → *APIs & Services* → *Library* → enable both **Gmail API** and **Google Calendar API**. The Calendar API is required for the side panel — skip it and the panel returns a 403 (`accessNotConfigured`) no matter how you reconnect. (A freshly enabled API can take a minute to go live.)
 4. **Consent screen:** *APIs & Services* → *OAuth consent screen*.
    - User type: **External** → Create.
    - App name `ZenBox Mail`, your email for the two contact fields → Save through the remaining steps (no scopes changes needed here).
@@ -45,7 +45,7 @@ ZenBox talks to Gmail directly from your machine, so you can bring your own OAut
 6. In ZenBox: **Settings → Account** → paste both → **Connect Gmail**. Your browser opens Google's consent page; approve access. You'll see a "Connected" page, and your inbox syncs in.
 
 Notes:
-- Requested scopes: `gmail.modify` (read, send, archive, label — no permanent delete, no account settings), `openid email profile` (your name + photo in the header), and `calendar.readonly` (the calendar side panel). Enable the **Google Calendar API** in the same project if you want the panel.
+- Requested scopes: `gmail.modify` (read, send, archive, label — no permanent delete, no account settings), `openid email profile` (your name + photo in the header), and `calendar.readonly` (the calendar side panel). The scope only helps if the **Google Calendar API** is enabled (step 3) — the two are separate.
 - Accounts connected before v0.6 were granted only `gmail.modify` — **Disconnect → Connect Gmail** once to grant the new scopes (profile photo and calendar appear after that).
 - Credentials are stored in the **Windows Credential Manager**, never on disk or in the repo.
 - Google shows an "unverified app" warning while your consent screen is in Testing status — that's your own app; click *Continue*.

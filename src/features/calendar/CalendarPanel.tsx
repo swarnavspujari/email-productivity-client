@@ -146,10 +146,10 @@ export function CalendarPanel() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {error ? (
+          // The Rust core classifies the cause (API-not-enabled vs. missing
+          // scope vs. generic) into actionable guidance — show it verbatim.
           <div className="px-4 py-6 text-[12px] leading-relaxed text-ink-3">
-            {error.includes("reconnect")
-              ? "Calendar needs a fresh Google consent — Settings → Account → Disconnect, then Connect Gmail again."
-              : error}
+            {error}
           </div>
         ) : (
           <div className="relative mx-3 my-2" style={{ height: (LAST_HOUR - FIRST_HOUR) * PX_PER_HOUR }}>

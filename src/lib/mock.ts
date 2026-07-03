@@ -659,6 +659,9 @@ export class MockBackend implements Backend {
   onTriageError(): () => void {
     return () => {};
   }
+  onNotice(): () => void {
+    return () => {};
+  }
 }
 
 /** First split (in settings order) whose rules match; empty-rule splits are

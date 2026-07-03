@@ -21,12 +21,18 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
+    /// Space-separated scopes Google actually granted. Absent from refresh
+    /// responses; present on the initial authorization-code exchange.
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 pub struct OauthOutcome {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: i64,
+    /// The scopes Google granted, so the caller can warn if Calendar was skipped.
+    pub granted_scope: Option<String>,
 }
 
 fn b64url(bytes: &[u8]) -> String {
@@ -149,6 +155,7 @@ pub async fn run_flow(
             .refresh_token
             .ok_or("Google did not return a refresh token — remove the app's access at myaccount.google.com/permissions and retry")?,
         expires_in: tok.expires_in.unwrap_or(3500),
+        granted_scope: tok.scope,
     })
 }
 

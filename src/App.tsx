@@ -84,11 +84,14 @@ export default function App() {
     const unTriage = backend.onTriageError((msg) =>
       useUi.getState().showToast(msg)
     );
+    // general core notices (e.g. a partial OAuth grant at connect time)
+    const unNotice = backend.onNotice((msg) => useUi.getState().showToast(msg));
     return () => {
       clearTimeout(timer);
       unMail();
       unImages();
       unTriage();
+      unNotice();
     };
   }, []);
 

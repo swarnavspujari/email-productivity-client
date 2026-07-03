@@ -129,7 +129,12 @@ impl GmailSession {
                 continue;
             }
             if !status.is_success() {
-                return Err(format!("Gmail API error ({status})"));
+                // Preserve the response body — Google puts the actionable reason
+                // (accessNotConfigured, insufficient scope, …) there, and callers
+                // classify on it. Read it BEFORE returning (can't .json() after).
+                let body = resp.text().await.unwrap_or_default();
+                let snippet: String = body.chars().take(500).collect();
+                return Err(format!("Gmail API error ({status}): {snippet}"));
             }
             return resp
                 .json()
@@ -160,7 +165,9 @@ impl GmailSession {
                 continue;
             }
             if !status.is_success() {
-                return Err(format!("Gmail API error ({status})"));
+                let body = resp.text().await.unwrap_or_default();
+                let snippet: String = body.chars().take(500).collect();
+                return Err(format!("Gmail API error ({status}): {snippet}"));
             }
             return resp
                 .json()
