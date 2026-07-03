@@ -38,6 +38,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ammonia = "4"
 pdf-extract = "0.7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+harper-core = { version = "2.5.0", features = ["concurrent"] }
 
 [profile.release]
 strip = true

@@ -7,6 +7,7 @@ import { useMail } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
 import { outgoingFromCompose, useUi } from "@/stores/ui";
 import { sanitizeUserHtml } from "@/lib/sanitize";
+import { LintedBody } from "./SpellCheck";
 import type { MailAttachment } from "@/lib/types";
 
 const UNDO_SEND_MS = 10_000;
@@ -306,11 +307,10 @@ export function Compose() {
           />
         </div>
 
-        <textarea
-          ref={bodyRef}
+        <LintedBody
           value={compose.body}
-          onChange={(e) => patch({ body: e.target.value })}
-          className="min-h-0 flex-1 resize-none bg-transparent px-4 py-3 text-[13.5px] leading-relaxed text-ink outline-none"
+          onChange={(body) => patch({ body })}
+          textareaRef={bodyRef}
           placeholder="Write, or press Ctrl+J to draft with AI…"
         />
 

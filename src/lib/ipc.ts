@@ -10,6 +10,7 @@ import type {
   DailyPhoto,
   DraftEntry,
   DraftRequest,
+  LintHit,
   ProfileInfo,
   KnowledgeBase,
   Message,
@@ -108,6 +109,9 @@ export interface Backend {
   photoShown(): Promise<void>;
   /** Store (or clear with "") a BYO Unsplash Access Key in the keychain. */
   setUnsplashKey(key: string): Promise<void>;
+
+  /** Offline Harper spell/grammar check of compose text. */
+  lintText(text: string): Promise<LintHit[]>;
 
   getSettings(): Promise<Settings>;
   saveSettings(settings: Settings): Promise<void>;
@@ -271,6 +275,9 @@ class TauriBackend implements Backend {
   }
   setUnsplashKey(key: string) {
     return invoke<void>("set_unsplash_key", { key });
+  }
+  lintText(text: string) {
+    return invoke<LintHit[]>("lint_text", { text });
   }
   getSettings() {
     return invoke<Settings>("get_settings");

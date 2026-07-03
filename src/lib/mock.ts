@@ -683,6 +683,35 @@ export class MockBackend implements Backend {
   async photoShown() {}
   async setUnsplashKey() {}
 
+  /** Tiny stand-in for Harper: a fixed misspelling list so the demo shows
+   *  the underline + click-to-fix flow. The desktop app lints for real. */
+  async lintText(text: string) {
+    const known: Record<string, string[]> = {
+      teh: ["the"],
+      recieve: ["receive"],
+      definately: ["definitely"],
+      adress: ["address"],
+      seperate: ["separate"],
+      occured: ["occurred"],
+      wich: ["which"],
+      thier: ["their"],
+    };
+    const hits = [];
+    const re = /[A-Za-z']+/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const fixes = known[m[0].toLowerCase()];
+      if (fixes) {
+        hits.push({
+          span: { start: m.index, end: m.index + m[0].length },
+          message: `Did you mean "${fixes[0]}"?`,
+          suggestions: fixes,
+        });
+      }
+    }
+    return hits;
+  }
+
   onMailUpdated(cb: () => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);

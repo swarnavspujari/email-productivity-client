@@ -119,6 +119,14 @@ export interface ProfileInfo {
   picture: string | null;
 }
 
+/** One spell/grammar finding from the local Harper linter. Offsets are
+ *  UTF-16 code units into the linted string; "" in suggestions = delete. */
+export interface LintHit {
+  span: { start: number; end: number };
+  message: string;
+  suggestions: string[];
+}
+
 /** Daily Unsplash photo for empty rest states. Links come utm-tagged. */
 export interface DailyPhoto {
   url: string;

@@ -1,6 +1,7 @@
 //! Fission Mail core: IPC surface, app state, and the background loop.
 //! Every command validates its inputs; every secret stays in the keychain.
 mod ai;
+mod harper;
 mod mail;
 mod secrets;
 mod store;
@@ -438,6 +439,18 @@ async fn photo_shown(state: State<'_, AppState>) -> Result<(), String> {
         .send()
         .await;
     Ok(())
+}
+
+/// Offline spell/grammar check of compose text (harper-core). The first call
+/// pays the dictionary load, so it runs on the blocking pool.
+#[tauri::command]
+async fn lint_text(text: String) -> Result<Vec<harper::LintHit>, String> {
+    if text.len() > 100_000 {
+        return Err("text too long to lint".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || harper::lint(&text))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// BYO Unsplash Access Key: stored in the OS keychain, overrides the baked
@@ -1944,6 +1957,7 @@ pub fn run() {
             get_daily_photo,
             photo_shown,
             set_unsplash_key,
+            lint_text,
             get_settings,
             save_settings,
             get_knowledge_base,
