@@ -108,7 +108,7 @@ Launch `npm run app:dev`, then:
 17. [ ] Settings → AI Providers → **Test connection** OK for each configured provider
 18. [ ] Settings → Knowledge Base → add an instruction → next AI draft complies
 19. [ ] Settings → Shortcuts → remap Compose to `n` → `n` composes, `c` doesn't
-20. [ ] The StrictlyVC newsletter (Other) renders as rich HTML on a white card — table, links, no layout blowout; `•••` toggles quoted trails on threads that have them
+20. [ ] The StrictlyVC newsletter (Other) renders as rich HTML on the theme's raised card (navy in dark, white in light) — table, links, no layout blowout; `•••` toggles quoted trails on threads that have them
 21. [ ] A 2+ message thread collapses older messages to one-line rows (click expands); attachment chips **open** and **save**; compose 📎 attaches a file that arrives on send
 22. [ ] Compose → type → `Esc` → "Draft saved"; `G`,`D` lists it; `Enter` resumes it; Discard deletes it
 23. [ ] Open a thread → `J`/`K`/arrows do nothing; `Space` scrolls the message; `Esc` returns to the list

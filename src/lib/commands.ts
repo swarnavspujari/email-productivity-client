@@ -35,12 +35,13 @@ const onMailScreen = () => ui().screen === "mail" && !inCompose();
 const inThread = () => onMailScreen() && mail().openThreadId !== null;
 const inList = () => onMailScreen() && mail().openThreadId === null;
 const hasTarget = () => actionTargetThreadId() !== null;
-/** ←/→ move calendar days only when the calendar owns focus: the week view
- *  screen, or the day panel while it is open and focused — never the list. */
+/** ←/→ move calendar days only when the calendar owns focus AND is visible:
+ *  the week view screen, or the day panel next to the list while it is open
+ *  and focused. An open thread hides the panel, so arrows go inert there. */
 const calendarFocused = () =>
   !inCompose() &&
   (ui().screen === "calendar" ||
-    (ui().screen === "mail" &&
+    (inList() &&
       useSettings.getState().settings.calendarOpen &&
       ui().focusRegion === "calendar"));
 
