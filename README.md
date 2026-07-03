@@ -2,7 +2,7 @@
 
 A **keyboard-first, AI-native desktop email client** in the spirit of Superhuman — built with Tauri v2 (Rust core + system webview), React, and your own AI keys. Local-first: your mail cache, your settings, and your API keys never leave your machine.
 
-> **Status:** v0.8 beta — Windows 11, auto-updating installer on the [Releases page](https://github.com/swarnavspujari/email-productivity-client/releases/latest). The same codebase targets macOS next, then iOS/Android via Tauri v2 mobile.
+> **Status:** v0.9 beta — Windows 11, auto-updating installer on the [Releases page](https://github.com/swarnavspujari/email-productivity-client/releases/latest). The same codebase targets macOS next, then iOS/Android via Tauri v2 mobile.
 
 *(screenshots/GIFs coming — run it and hit `Ctrl+K`)*
 
@@ -104,8 +104,8 @@ Every shortcut is remappable in **Settings → Shortcuts**. Full list + smoke te
 
 ## Roadmap
 
-- **Shipped through v0.7:** Gmail sync (incremental via history API) · full Superhuman-style keymap + palette · split inbox · Inbox Zero celebrations + Get Me To Zero · streaming BYOK AI (Claude/OpenAI/NIM) · Instant Reply · Ask AI · undo anything incl. send · send later · multi-account · HTML mail rendering · attachments · local drafts · onboarding · auto-update · notifications · calendar side panel · light theme
-- **Next:** Outlook (Microsoft Graph) adapter · `X` bulk selection · search operators (`from:`, `in:`) · macOS build · Ask AI across the whole inbox
+- **Shipped through v0.9:** Gmail sync (incremental via history API) · full Superhuman-style keymap + palette · split inbox · bulk selection with single-`Z` undo · real synced Trash · folder/label sidebar with proper label names · Inbox Zero celebrations + Get Me To Zero · streaming BYOK AI (Claude/OpenAI/NIM) · Instant Reply · Ask AI · undo anything incl. send · send later · multi-account · theme-aware HTML mail rendering · attachments · local drafts · onboarding · auto-update · notifications · local-first calendar (day panel + week view) · daily Unsplash photo on empty splits · offline Harper spell/grammar in compose · the Fission Mail Design System in dark + light
+- **Next:** Outlook (Microsoft Graph) adapter · search operators (`from:`, `in:`) · macOS build · Ask AI across the whole inbox
 - **Later (documented, not built):** iOS/Android via Tauri v2 mobile · calendar week view + event creation · team collaboration · CRM integrations — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#p2-later)
 
 ## License
