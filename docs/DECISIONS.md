@@ -119,5 +119,16 @@ Running log of every non-default choice. Newest last.
     - **Archive capped ~1 month → full-history search + load-on-scroll.** Default sync stays recent-only for speed (`DONE_BACKFILL=200`). Two new async commands: `search_all` folds a live Gmail search (`q=`) into the local FTS results, fetching+indexing any matched threads older than the cache (so search covers all history; local results show instantly, remote fills in behind a spinner via the store's `searchingMore`); `load_older(view)` pages the next block of Done/Starred/Trash from Gmail using the oldest local thread's date as a `before:<epoch>` cursor, triggered when the list scrolls near the bottom (`loadingOlder`/`noMoreOlder`). Inbox (fully backfilled) and label/reminder views don't page. Mock mirrors both as local-only/no-op.
     - **Folder shortcuts:** `FolderSidebar` rows show their `g`-chord hint (e.g. "G then I") in light mono text, resolved live from the shortcut map so remaps stay accurate.
 
+## v0.9.2 — compose/inbox/render polish (2026-07-04)
+85. **Seven fixes from the owner's second desktop pass:**
+    - **Sidebar hints** compacted from "G then I" to "G+I" (replace `" then "` in the formatted expr).
+    - **Inbox count** is now a small red (`--bad`) rounded-square badge beside "Inbox", hidden at 0 (was plain right-aligned text).
+    - **Inbox-zero rest state** shows only the photo — the inbox-zero streak bottom-left, Unsplash attribution bottom-right, no overlaid headline/sub. `RestState` reads `streaks.daily` from settings; the no-photo fallback stays centered.
+    - **Signature is editable in the body, not appended at send.** `activeSignatureText()` flattens the (possibly rich) signature to text; compose/reply seed it into `body` with `signature:""`, so `outgoingFromCompose` no longer re-adds it. Reply/forward seed a blank line above the signature and place the caret at the top. **Tradeoff:** a rich/HTML signature loses its formatting when inline-edited (a true WYSIWYG composer is out of scope) — noted for the owner.
+    - **Thread history collapses behind `•••`** (Gmail-style) in compose, shown only when a `quote` exists (replies/forwards); new mail has none.
+    - **Focus + tab order:** new mail focuses **To** (RecipientInput `autoFocus`), Tab walks To→Cc→Subject→body; replies focus the body at the top.
+    - **"Subj" → "Subject"** label (widened to `w-16`) and the subject placeholder is now "What is this email about?".
+    - **HTML email height:** the sanitized-body iframe was measuring `body.scrollHeight`, which some newsletters pin to the viewport via their own `body/html{height:100%}`, clipping content behind an inner scrollbar. Now the email is wrapped in `#fm-root` and the iframe height is `max(root.offsetHeight+padding, body.scrollHeight)` — a wrapper div's height is its content, immune to the email's height rules — never mutating the iframe height (avoids a ResizeObserver feedback loop), with a ResizeObserver + delayed re-measures for late-loading content.
+
 ## Model defaults (editable in Settings)
 - **NIM (default): `deepseek-ai/deepseek-v4-pro`** @ `https://integrate.api.nvidia.com/v1` (alt: `deepseek-v4-flash`) · Claude: `claude-sonnet-5` · OpenAI: `gpt-5.2`

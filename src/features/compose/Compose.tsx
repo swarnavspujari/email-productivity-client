@@ -6,7 +6,6 @@ import { pushUndo } from "@/lib/undo";
 import { useMail } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
 import { outgoingFromCompose, useUi } from "@/stores/ui";
-import { sanitizeUserHtml } from "@/lib/sanitize";
 import { LintedBody } from "./SpellCheck";
 import { RecipientInput } from "./RecipientInput";
 import type { MailAttachment } from "@/lib/types";
@@ -144,6 +143,7 @@ export function Compose() {
   const aiBarOpen = useUi((s) => s.aiBarOpen);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showQuote, setShowQuote] = useState(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -151,7 +151,15 @@ export function Compose() {
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, ...p } : null }));
 
   useEffect(() => {
-    bodyRef.current?.focus();
+    // New mail: focus To (the RecipientInput autofocuses itself), then Tab
+    // walks To → Cc → Subject → body. Replies/forwards go straight to the
+    // body with the caret at the very top, above the seeded signature.
+    if (compose.mode !== "new") {
+      const ta = bodyRef.current;
+      ta?.focus();
+      ta?.setSelectionRange(0, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Autosave the draft while typing, so a crash or close loses nothing.
@@ -282,24 +290,25 @@ export function Compose() {
         </div>
 
         <div className="flex items-center gap-2 border-b border-line px-4 py-2">
-          <label className="w-8 text-[12px] text-ink-3">To</label>
+          <label className="w-16 text-[12px] text-ink-3">To</label>
           <RecipientInput
             value={compose.to}
             onChange={(to) => patch({ to })}
             placeholder="Start typing a name or email…"
+            autoFocus={compose.mode === "new"}
           />
         </div>
         <div className="flex items-center gap-2 border-b border-line px-4 py-2">
-          <label className="w-8 text-[12px] text-ink-3">Cc</label>
+          <label className="w-16 text-[12px] text-ink-3">Cc</label>
           <RecipientInput value={compose.cc} onChange={(cc) => patch({ cc })} />
         </div>
         <div className="flex items-center gap-2 border-b border-line px-4 py-2">
-          <label className="w-8 text-[12px] text-ink-3">Subj</label>
+          <label className="w-16 text-[12px] text-ink-3">Subject</label>
           <input
             value={compose.subject}
             onChange={(e) => patch({ subject: e.target.value })}
-            className="flex-1 bg-transparent text-[13px] font-medium text-ink outline-none"
-            placeholder="Subject"
+            className="flex-1 bg-transparent text-[13px] font-medium text-ink outline-none placeholder:font-normal"
+            placeholder="What is this email about?"
           />
         </div>
 
@@ -337,26 +346,23 @@ export function Compose() {
           </div>
         )}
 
-        {compose.signature &&
-          (/<\w+[^>]*>/.test(compose.signature) ? (
-            <div
-              className="selectable max-h-36 overflow-y-auto rounded-b-none border-t border-line bg-raised px-4 py-2 text-[12.5px] leading-relaxed text-ink"
-              title="Signature — set per account in Settings → Account"
-              // user-authored, sanitized again at render as defense in depth
-              dangerouslySetInnerHTML={{ __html: sanitizeUserHtml(compose.signature) }}
-            />
-          ) : (
-            <div
-              className="whitespace-pre-wrap border-t border-line px-4 py-2 text-[12.5px] leading-relaxed text-ink-2"
-              title="Signature — set per account in Settings → Account"
-            >
-              {compose.signature}
-            </div>
-          ))}
-
+        {/* Thread history — collapsed behind ••• like Gmail's trimmed content;
+            only present for replies/forwards (a new email has no thread). */}
         {compose.quote && (
-          <div className="max-h-28 overflow-y-auto border-t border-line px-4 py-2 text-[12px] leading-relaxed text-ink-3">
-            {compose.quote}
+          <div className="border-t border-line px-4 py-2">
+            {showQuote ? (
+              <div className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface px-3 py-2 text-[12px] leading-relaxed text-ink-3">
+                {compose.quote}
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowQuote(true)}
+                title="Show trimmed thread history"
+                className="rounded-full border border-line-strong px-2 leading-4 text-ink-3 hover:bg-hover hover:text-ink"
+              >
+                •••
+              </button>
+            )}
           </div>
         )}
 

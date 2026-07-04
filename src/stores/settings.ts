@@ -109,3 +109,15 @@ export function activeSignature(): string {
   const email = s.accounts.active;
   return (s.settings.signatures[email] ?? "").trim();
 }
+
+/** The active signature as plain text, for seeding into the editable compose
+ *  body (a rich/HTML signature is flattened to text so it can be edited). */
+export function activeSignatureText(): string {
+  const sig = activeSignature();
+  if (!sig) return "";
+  if (/<\w+[^>]*>/.test(sig)) {
+    const doc = new DOMParser().parseFromString(sig, "text/html");
+    return (doc.body.textContent ?? "").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  return sig;
+}

@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { backend, openExternal } from "@/lib/ipc";
 import { decodeBlurHash } from "@/lib/blurhash";
+import { useSettings } from "@/stores/settings";
 import type { DailyPhoto } from "@/lib/types";
 
 const UNSPLASH_HOME =
@@ -33,16 +34,13 @@ function BlurCanvas({ hash }: { hash: string }) {
   );
 }
 
-export function RestState({
-  headline,
-  sub,
-}: {
-  headline: string;
-  sub?: React.ReactNode;
-}) {
+/** Inbox-zero rest state: just the daily photo, with the inbox-zero streak
+ *  bottom-left and the Unsplash attribution bottom-right. No overlaid copy. */
+export function RestState() {
   const [photo, setPhoto] = useState<DailyPhoto | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [hotlinkFailed, setHotlinkFailed] = useState(false);
+  const streak = useSettings((s) => s.streaks.daily);
 
   useEffect(() => {
     let stale = false;
@@ -59,6 +57,10 @@ export function RestState({
 
   const src =
     photo && hotlinkFailed ? (photo.cachedDataUri ?? photo.url) : photo?.url;
+  const streakLabel =
+    streak > 0
+      ? `🔥 ${streak}-day inbox-zero streak`
+      : "Inbox zero";
 
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -79,30 +81,22 @@ export function RestState({
           }`}
         />
       )}
-      {/* protection gradient so the copy reads on any photo (same pattern
-          as the inbox-zero celebration) */}
+      {/* subtle bottom scrim so the streak + attribution stay legible on any photo */}
       {photo && (
-        <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/25 to-black/45" />
+        <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/45 to-transparent" />
       )}
-      <div className="relative flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-        {!photo && <div className="text-4xl text-ink-3">◎</div>}
-        <div
-          className={`text-[17px] font-semibold tracking-tight ${
-            photo ? "text-white/90 drop-shadow" : "text-ink-2"
-          }`}
-        >
-          {headline}
+      {/* no photo (offline / no key): a calm centered fallback */}
+      {!photo && (
+        <div className="flex h-full flex-col items-center justify-center gap-1 text-ink-3">
+          <div className="text-4xl">◎</div>
+          <div className="text-[13px]">{streakLabel}</div>
         </div>
-        {sub && (
-          <div
-            className={`text-[12.5px] ${
-              photo ? "text-white/75 drop-shadow" : "text-ink-3"
-            }`}
-          >
-            {sub}
-          </div>
-        )}
-      </div>
+      )}
+      {photo && (
+        <div className="absolute bottom-2.5 left-3.5 text-[12px] font-medium text-white/85 drop-shadow">
+          {streakLabel}
+        </div>
+      )}
       {photo && (
         <div className="absolute bottom-2.5 right-3.5 text-[11px] text-white/70">
           {photo.authorLink ? (

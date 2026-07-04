@@ -32,14 +32,15 @@ function isSystemLabel(l: string): boolean {
 function Item({
   name,
   sub,
-  count,
+  badge,
   hint,
   active,
   onClick,
 }: {
   name: string;
   sub?: string;
-  count?: number;
+  /** A count shown as a small red notification square by the name (hidden at 0). */
+  badge?: number;
   hint?: string;
   active: boolean;
   onClick: () => void;
@@ -61,11 +62,13 @@ function Item({
       >
         {name}
       </span>
+      {badge !== undefined && badge > 0 && (
+        <span className="inline-flex min-w-[18px] items-center justify-center rounded-[5px] bg-bad px-1 text-[10.5px] font-semibold leading-[16px] tabular-nums text-white">
+          {badge}
+        </span>
+      )}
       {sub && <span className="truncate text-[12px] text-ink-3">{sub}</span>}
       <span className="flex-1" />
-      {count !== undefined && count > 0 && (
-        <span className="text-[12px] tabular-nums text-ink-3">{count}</span>
-      )}
       {hint && (
         <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-3/70">
           {hint}
@@ -105,8 +108,10 @@ export function FolderSidebar() {
         </span>
       </div>
       {FOLDERS.map((f) => {
+        // compact chord hint: "g i" → "G+I" (not "G then I")
         const hint = f.shortcut
-          ? formatKeyExpr(shortcutHint(f.shortcut)) || undefined
+          ? formatKeyExpr(shortcutHint(f.shortcut)).replace(/ then /gi, "+") ||
+            undefined
           : undefined;
         return f.id === "drafts" ? (
           <Item
@@ -121,7 +126,7 @@ export function FolderSidebar() {
             key={f.id}
             name={f.name}
             sub={f.sub}
-            count={f.id === "inbox" ? inboxCount : undefined}
+            badge={f.id === "inbox" ? inboxCount : undefined}
             hint={hint}
             active={listView === f.id}
             onClick={() => goTo(f.id as MailView)}

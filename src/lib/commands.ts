@@ -6,7 +6,7 @@ import type { Binding } from "./keyboard";
 import { popUndo, pushUndo } from "./undo";
 import { useCalendar } from "@/stores/calendar";
 import { useMail, visibleThreads } from "@/stores/mail";
-import { activeSignature, useSettings } from "@/stores/settings";
+import { activeSignatureText, useSettings } from "@/stores/settings";
 import {
   actionTargetThreadId,
   actionTargetThreadIds,
@@ -77,6 +77,11 @@ export async function startReply(
     msgs[msgs.length - 1];
 
   const subject = msgs[0].subject;
+  // Signature lives in the editable body now (not appended at send), so the
+  // user can tweak it per message. The reply is typed above it (blank line
+  // seeded so the caret — placed at the top on focus — has room).
+  const sig = activeSignatureText();
+  const body = sig ? `${presetBody ?? ""}\n\n${sig}` : (presetBody ?? "");
   const base: ComposeState = {
     mode,
     threadId: id,
@@ -84,7 +89,7 @@ export async function startReply(
     cc: "",
     attachments: [],
     draftId: null,
-    signature: activeSignature(),
+    signature: "",
     subject:
       mode === "forward"
         ? subject.startsWith("Fwd:")
@@ -93,7 +98,7 @@ export async function startReply(
         : subject.startsWith("Re:")
           ? subject
           : `Re: ${subject}`,
-    body: presetBody ?? "",
+    body,
     quote: quoteOf(last),
   };
   if (mode === "reply") {
@@ -161,19 +166,23 @@ export function allCommands(): Command[] {
       title: "Compose New Email",
       group: "Compose",
       when: () => !inCompose(),
-      run: () =>
-        ui().startCompose({
+      run: () => {
+        // Seed the signature into the editable body (blank line above for the
+        // message); nothing is appended at send.
+        const sig = activeSignatureText();
+        return ui().startCompose({
           mode: "new",
           threadId: null,
           to: "",
           cc: "",
           subject: "",
-          body: "",
-          signature: activeSignature(),
+          body: sig ? `\n\n${sig}\n` : "",
+          signature: "",
           quote: "",
           attachments: [],
           draftId: null,
-        }),
+        });
+      },
     },
     {
       id: "thread.done",

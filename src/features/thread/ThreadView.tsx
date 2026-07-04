@@ -72,39 +72,58 @@ function HtmlBody({
     const quoteCss = showQuote
       ? ""
       : ".gmail_quote{display:none!important} body>blockquote:last-of-type, div>blockquote:last-child{display:none!important}";
+    // The email is wrapped in #fm-root so its true content height can be read
+    // off that element — some newsletters set body/html height:100%, which
+    // makes body.scrollHeight track the iframe viewport and clip the content.
     return `<!doctype html><html><head><meta charset="utf-8"><style>
       :root{color-scheme:${theme}}
-      html,body{margin:0;padding:0}
+      html,body{margin:0;padding:0;height:auto!important}
       body{background:${v("--bg-raised", "#ffffff")};color:${v("--text-primary", "#1d222b")};
            font:13.5px/1.55 "Segoe UI",system-ui,sans-serif;
            padding:16px 18px;word-break:break-word;overflow-x:hidden}
+      #fm-root{overflow:hidden}
       img{max-width:100%;height:auto}
       table{max-width:100%}
       a{color:${v("--accent-strong", "#3b52c4")}}
       blockquote{margin:8px 0 8px 4px;padding-left:12px;border-left:2px solid ${v("--border-strong", "#d5d9e2")};color:${v("--text-secondary", "#5b6272")}}
       pre{white-space:pre-wrap}
       ${quoteCss}
-    </style></head><body>${html}</body></html>`;
+    </style></head><body><div id="fm-root">${html}</div></body></html>`;
   }, [html, showQuote, theme]);
 
   useEffect(() => {
     const iframe = ref.current;
     if (!iframe) return;
     let ro: ResizeObserver | null = null;
+    const timers: ReturnType<typeof setTimeout>[] = [];
     const wire = () => {
       const doc = iframe.contentDocument;
       if (!doc?.body) return;
-      // body.scrollHeight, not documentElement's — the latter never reports
-      // smaller than the iframe viewport, so heights would only ratchet up
-      const measure = () =>
-        setHeight(Math.min(20_000, Math.max(40, doc.body.scrollHeight)));
+      // Measure the content wrapper (#fm-root), not body/documentElement: a
+      // wrapper div's height is its content, unaffected by an email's own
+      // body/html height:100% (which was clipping some newsletters). +32 for
+      // our body padding. Never mutate the iframe height here — React owns it,
+      // so there's no ResizeObserver feedback loop.
+      const measure = () => {
+        const root = doc.getElementById("fm-root");
+        const h = Math.max(
+          (root?.offsetHeight ?? 0) + 32,
+          doc.body.scrollHeight
+        );
+        setHeight(Math.min(20_000, Math.max(40, h)));
+      };
       measure();
       ro = new ResizeObserver(measure);
+      const root = doc.getElementById("fm-root");
+      if (root) ro.observe(root);
       ro.observe(doc.body);
       // late-loading remote images change the layout
       for (const img of Array.from(doc.images)) {
         img.addEventListener("load", measure);
       }
+      // re-measure after layout/fonts/late content settle (catches newsletters
+      // whose height isn't final on first paint)
+      for (const d of [150, 500, 1200]) timers.push(setTimeout(measure, d));
       doc.addEventListener("click", (e) => {
         const a = (e.target as Element | null)?.closest?.("a");
         if (a?.getAttribute("href")) {
@@ -119,6 +138,7 @@ function HtmlBody({
     return () => {
       iframe.removeEventListener("load", wire);
       ro?.disconnect();
+      timers.forEach(clearTimeout);
     };
   }, [srcDoc]);
 

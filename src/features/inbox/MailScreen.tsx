@@ -378,15 +378,7 @@ export function MailScreen() {
           )}
           {loaded && threads.length === 0 && (
             listView === "inbox" ? (
-              <RestState
-                headline="This split is at zero."
-                sub={
-                  <>
-                    Breathe. Or press <span className="kbd">Tab</span> for the
-                    next split.
-                  </>
-                }
-              />
+              <RestState />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
                 <div className="text-4xl">◎</div>
