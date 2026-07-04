@@ -6,6 +6,7 @@ export function SearchScreen() {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const results = useMail((s) => s.searchResults);
+  const searchingMore = useMail((s) => s.searchingMore);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -46,9 +47,15 @@ export function SearchScreen() {
               useUi.getState().setScreen("mail");
             }
           }}
-          placeholder="Search mail — full-text, instant…"
+          placeholder="Search all mail — local first, then your full history…"
           className="w-full rounded-lg border border-line-strong bg-raised px-4 py-2.5 text-[14px] text-ink outline-none placeholder:text-ink-3 focus:border-accent"
         />
+        {searchingMore && (
+          <div className="mt-2 flex items-center gap-2 text-[11.5px] text-ink-3">
+            <span className="zb-spin inline-block h-3 w-3 rounded-full border-2 border-line-strong border-t-accent" />
+            Searching your full Gmail history…
+          </div>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {results.map((r, i) => (

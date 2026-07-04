@@ -44,7 +44,7 @@ Aligned with **Superhuman v7 (Windows & Linux edition)**. `mod` = `Ctrl` on Wind
 
 | Key | Action |
 |---|---|
-| `J` / `↓`, `K` / `↑` | Next / previous conversation (list only — inert while reading) |
+| `J` / `↓`, `K` / `↑` | Next / previous conversation — in a thread it advances and opens the next one (Superhuman-style) |
 | `Enter` | Open thread (in list) / Reply-all (in thread) |
 | `Space` | Scroll the open message down half a screen |
 | `R` | Reply (inserts the previewed Instant Reply if one is selected) |

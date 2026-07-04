@@ -252,15 +252,6 @@ body {
   line-height: 16px;
 }
 
-/* The signature bottom wash — present, never loud. */
-.fm-wash::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: var(--wash-bottom);
-}
-
 @keyframes zb-fade-in {
   from {
     opacity: 0;

@@ -426,6 +426,14 @@ export class MockBackend implements Backend {
     }
     return hits.sort((a, b) => b.lastDate - a.lastDate);
   }
+  // Demo has no server past the fixtures, so full-history search == local
+  // search and there's nothing older to page in.
+  async searchAll(query: string): Promise<SearchResult[]> {
+    return this.search(query);
+  }
+  async loadOlder(): Promise<number> {
+    return 0;
+  }
 
   async bulkArchive(opts: BulkArchiveOpts): Promise<number> {
     const cutoff = Date.now() - opts.olderThanDays * 24 * 3600_000;

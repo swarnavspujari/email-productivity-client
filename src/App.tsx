@@ -142,7 +142,7 @@ export default function App() {
   }
 
   return (
-    <div className="fm-wash relative flex h-full bg-base">
+    <div className="relative flex h-full bg-base">
       <NavRail
         view={screen === "calendar" ? "calendar" : "mail"}
         onMail={() => {

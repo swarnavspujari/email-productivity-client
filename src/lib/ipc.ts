@@ -82,6 +82,12 @@ export interface Backend {
   /** Undo Send: reclaim the draft before the outbox flushes. Throws if sent. */
   cancelOutbox(outboxId: number): Promise<OutgoingMail>;
   search(query: string): Promise<SearchResult[]>;
+  /** Full-history search: local matches plus a live Gmail search for mail
+   *  older than the local cache. Slower than search(); call it debounced. */
+  searchAll(query: string): Promise<SearchResult[]>;
+  /** Fetch the next older page of a paged view (done/starred/trash) from
+   *  Gmail. Returns how many new threads were added. */
+  loadOlder(view: MailView): Promise<number>;
   bulkArchive(opts: BulkArchiveOpts): Promise<number>;
 
   /** Save via OS dialog. Resolves to the path, or null if cancelled. */
@@ -240,6 +246,12 @@ class TauriBackend implements Backend {
   }
   search(query: string) {
     return invoke<SearchResult[]>("search_threads", { query });
+  }
+  searchAll(query: string) {
+    return invoke<SearchResult[]>("search_all", { query });
+  }
+  loadOlder(view: MailView) {
+    return invoke<number>("load_older", { view });
   }
   bulkArchive(opts: BulkArchiveOpts) {
     return invoke<number>("bulk_archive", { opts });

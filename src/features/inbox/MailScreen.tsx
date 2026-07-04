@@ -290,6 +290,12 @@ export function MailScreen() {
   const calendarOpen = useSettings((s) => s.settings.calendarOpen);
   const sidebarOpen = useSettings((s) => s.settings.sidebarOpen);
   const loaded = useMail((s) => s.loaded);
+  const loadingOlder = useMail((s) => s.loadingOlder);
+  const noMoreOlder = useMail((s) => s.noMoreOlder);
+  // Done/Starred/Trash page older mail from Gmail as you scroll; inbox is
+  // fully synced and label/reminder views aren't paged.
+  const pagedView =
+    listView === "done" || listView === "starred" || listView === "trash";
 
   const threads = useMemo(() => {
     if (listView === "inbox") return splitThreads(inbox, activeSplitId);
@@ -337,7 +343,16 @@ export function MailScreen() {
           </div>
         )}
         {selectedIds.size > 0 && <BulkBar count={selectedIds.size} />}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto"
+          onScroll={(e) => {
+            // near the bottom of a paged view → fetch the next older page
+            if (!pagedView) return;
+            const el = e.currentTarget;
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 240)
+              void useMail.getState().loadOlder();
+          }}
+        >
           {threads.map((t, i) => (
             <Row
               key={t.id}
@@ -347,6 +362,20 @@ export function MailScreen() {
               checked={selectedIds.has(t.id)}
             />
           ))}
+          {pagedView && threads.length > 0 && (
+            <div className="flex items-center justify-center gap-2 py-3 text-[11.5px] text-ink-3">
+              {loadingOlder ? (
+                <>
+                  <span className="zb-spin inline-block h-3 w-3 rounded-full border-2 border-line-strong border-t-accent" />
+                  Loading older mail…
+                </>
+              ) : noMoreOlder ? (
+                "End of history."
+              ) : (
+                "Scroll for older mail"
+              )}
+            </div>
+          )}
           {loaded && threads.length === 0 && (
             listView === "inbox" ? (
               <RestState

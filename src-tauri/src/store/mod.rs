@@ -1325,6 +1325,44 @@ pub fn search(conn: &Connection, query: &str, account_id: &str) -> Result<Vec<Se
     Ok(rows)
 }
 
+/// One thread as a SearchResult (used to fold remote full-history matches in
+/// beside the local FTS results). Excludes hidden (trash/spam) like `search`.
+pub fn get_search_result(conn: &Connection, id: &str) -> Option<SearchResult> {
+    conn.query_row(
+        "SELECT id, subject, snippet, last_date FROM threads
+         WHERE id = ?1 AND hidden IS NULL",
+        params![id],
+        |r| {
+            Ok(SearchResult {
+                thread_id: r.get(0)?,
+                subject: r.get(1)?,
+                snippet: r.get(2)?,
+                last_date: r.get(3)?,
+            })
+        },
+    )
+    .ok()
+}
+
+/// Oldest locally-synced thread date for a paged view — the cursor for
+/// fetching the next, older page from Gmail. None if the view is empty or
+/// doesn't page.
+pub fn oldest_thread_date(conn: &Connection, view: &str, account_id: &str) -> Option<i64> {
+    let where_clause = match view {
+        "done" => "in_inbox = 0 AND snoozed_until IS NULL AND hidden IS NULL",
+        "starred" => "starred = 1 AND hidden IS NULL",
+        "trash" => "hidden = 'trash'",
+        _ => return None,
+    };
+    conn.query_row(
+        &format!("SELECT MIN(last_date) FROM threads WHERE {where_clause} AND account_id = ?1"),
+        params![account_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
 /// Threads eligible for "Get Me To Zero"; the split filter runs in the caller
 /// (split semantics live with the settings, not the store).
 pub fn inbox_threads_for_sweep(conn: &Connection, account_id: &str) -> Result<Vec<Thread>, String> {

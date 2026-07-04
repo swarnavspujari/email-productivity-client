@@ -4,6 +4,9 @@ import { assignSplit } from "@/lib/mock";
 import { useSettings } from "./settings";
 import type { Message, SearchResult, Thread, ThreadId } from "@/lib/types";
 
+// Guards against a slow full-history search landing after the query moved on.
+let lastSearchQuery = "";
+
 interface MailState {
   loaded: boolean;
   inbox: Thread[];
@@ -24,6 +27,12 @@ interface MailState {
   openMessages: Message[];
 
   searchResults: SearchResult[];
+  /** A live full-history search is still filling in behind the local results. */
+  searchingMore: boolean;
+  /** Fetching an older page of the current paged view from Gmail. */
+  loadingOlder: boolean;
+  /** The current view has no older pages left to fetch. */
+  noMoreOlder: boolean;
 
   refresh: () => Promise<void>;
   setListView: (v: MailView) => void;
@@ -52,6 +61,7 @@ interface MailState {
   moveLabel: (id: ThreadId, label: string) => Promise<void>;
   moveToInbox: (id: ThreadId) => Promise<void>;
   runSearch: (query: string) => Promise<void>;
+  loadOlder: () => Promise<void>;
   bulkArchive: (opts: {
     olderThanDays: number;
     preserveUnread: boolean;
@@ -89,6 +99,9 @@ export const useMail = create<MailState>((set, get) => ({
   openThreadId: null,
   openMessages: [],
   searchResults: [],
+  searchingMore: false,
+  loadingOlder: false,
+  noMoreOlder: false,
 
   refresh: async () => {
     const labelView = get().listView.startsWith("label:") ? get().listView : null;
@@ -115,7 +128,13 @@ export const useMail = create<MailState>((set, get) => ({
   },
 
   setListView: (v) => {
-    set({ listView: v, selectedIndex: 0, selectedIds: new Set(), labelThreads: [] });
+    set({
+      listView: v,
+      selectedIndex: 0,
+      selectedIds: new Set(),
+      labelThreads: [],
+      noMoreOlder: false,
+    });
     if (v.startsWith("label:")) {
       void backend.listThreads(v).then((labelThreads) => {
         if (get().listView === v) set({ labelThreads });
@@ -336,7 +355,41 @@ export const useMail = create<MailState>((set, get) => ({
   },
 
   runSearch: async (query) => {
-    set({ searchResults: await backend.search(query) });
+    lastSearchQuery = query;
+    if (!query.trim()) {
+      set({ searchResults: [], searchingMore: false });
+      return;
+    }
+    // Instant local results first…
+    const local = await backend.search(query);
+    if (lastSearchQuery !== query) return;
+    set({ searchResults: local, searchingMore: true });
+    // …then a live Gmail search so mail older than the local cache is found.
+    try {
+      const full = await backend.searchAll(query);
+      if (lastSearchQuery === query) set({ searchResults: full });
+    } catch {
+      /* offline / not connected — local results stand */
+    } finally {
+      if (lastSearchQuery === query) set({ searchingMore: false });
+    }
+  },
+
+  loadOlder: async () => {
+    const s = get();
+    if (s.loadingOlder || s.noMoreOlder) return;
+    // only the paged archive-style views fetch older pages
+    if (!["done", "starred", "trash"].includes(s.listView)) return;
+    set({ loadingOlder: true });
+    try {
+      const added = await backend.loadOlder(s.listView);
+      if (added > 0) await get().refresh();
+      else set({ noMoreOlder: true });
+    } catch {
+      /* leave the flags; a later scroll can retry */
+    } finally {
+      set({ loadingOlder: false });
+    }
   },
 
   bulkArchive: async (opts) => {

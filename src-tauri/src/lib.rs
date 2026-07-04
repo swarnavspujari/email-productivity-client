@@ -933,6 +933,131 @@ fn search_threads(state: State<'_, AppState>, query: String) -> Result<Vec<Searc
     store::search(&conn, &query, &active)
 }
 
+/// Full-history search: the local FTS results (instant, from `search_threads`)
+/// plus a live Gmail search so mail older than the local cache is findable.
+/// Matched threads are fetched + indexed so later local searches include them.
+#[tauri::command]
+async fn search_all(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<SearchResult>, String> {
+    if query.trim().is_empty() || query.len() > 200 {
+        return Ok(vec![]);
+    }
+    let (active, is_gmail, local) = {
+        let conn = state.db.lock().unwrap();
+        let acct = store::active_account(&conn);
+        let local = store::search(&conn, &query, &acct.email)?;
+        (acct.email.clone(), acct.provider == "gmail", local)
+    };
+    if !is_gmail {
+        return Ok(local); // demo mode has no server to reach past
+    }
+    // Live Gmail search (Gmail's q excludes trash/spam by default, matching
+    // the local `hidden IS NULL` filter). Network failure → local-only.
+    let remote_ids: Vec<String> = {
+        let mut sessions = state.gmail.lock().await;
+        let Some(session) = sessions.get_mut(&active) else { return Ok(local) };
+        match session.list_thread_ids_paged(&state.http, &query, 50).await {
+            Ok(v) => v.into_iter().map(|(id, _)| id).collect(),
+            Err(_) => return Ok(local),
+        }
+    };
+    let mut seen: std::collections::HashSet<String> =
+        local.iter().map(|r| r.thread_id.clone()).collect();
+    let mut results = local;
+    {
+        let mut sessions = state.gmail.lock().await;
+        if let Some(session) = sessions.get_mut(&active) {
+            for id in remote_ids {
+                if seen.contains(&id) {
+                    continue;
+                }
+                // fetch+index the thread if we don't have it, then fold it in
+                let have = { store::get_thread(&state.db.lock().unwrap(), &id).is_some() };
+                if !have {
+                    let _ =
+                        mail::sync::refetch_thread(&state.http, session, &state.db, &active, &id)
+                            .await;
+                }
+                if let Some(r) = store::get_search_result(&state.db.lock().unwrap(), &id) {
+                    seen.insert(id);
+                    results.push(r);
+                }
+            }
+        }
+    }
+    results.sort_by(|a, b| b.last_date.cmp(&a.last_date));
+    results.truncate(80);
+    Ok(results)
+}
+
+/// Fetch the next, older page of a paged view (Done / Starred / Trash) from
+/// Gmail using the oldest local thread as the cursor. Returns how many new
+/// threads were added; emits mail:updated so the list re-reads.
+#[tauri::command]
+async fn load_older(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    view: String,
+) -> Result<i64, String> {
+    let base = match view.as_str() {
+        "done" => "-in:inbox -in:spam -in:trash -in:draft",
+        "starred" => "is:starred",
+        "trash" => "in:trash",
+        // inbox is fully backfilled; reminders/labels don't page here
+        _ => return Ok(0),
+    };
+    let (active, is_gmail, oldest) = {
+        let conn = state.db.lock().unwrap();
+        let acct = store::active_account(&conn);
+        let oldest = store::oldest_thread_date(&conn, &view, &acct.email);
+        (acct.email.clone(), acct.provider == "gmail", oldest)
+    };
+    let Some(oldest_ms) = oldest else { return Ok(0) };
+    if !is_gmail {
+        return Ok(0);
+    }
+    // Gmail's before: accepts a unix-seconds cursor — everything strictly older
+    // than the oldest thread we already hold.
+    let query = format!("{base} before:{}", oldest_ms / 1000);
+    let ids: Vec<String> = {
+        let mut sessions = state.gmail.lock().await;
+        let Some(session) = sessions.get_mut(&active) else { return Ok(0) };
+        // one page per scroll; each thread is fetched individually below, so
+        // keep it modest for a responsive load-more
+        session
+            .list_thread_ids_paged(&state.http, &query, 50)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    };
+    let mut added = 0i64;
+    {
+        let mut sessions = state.gmail.lock().await;
+        if let Some(session) = sessions.get_mut(&active) {
+            for id in ids {
+                let have = { store::get_thread(&state.db.lock().unwrap(), &id).is_some() };
+                if have {
+                    continue;
+                }
+                if mail::sync::refetch_thread(&state.http, session, &state.db, &active, &id)
+                    .await
+                    .is_ok()
+                {
+                    added += 1;
+                }
+            }
+        }
+    }
+    if added > 0 {
+        let _ = app.emit("mail:updated", ());
+    }
+    Ok(added)
+}
+
 #[tauri::command]
 fn list_labels(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     store::list_labels(&state.db.lock().unwrap())
@@ -1972,6 +2097,8 @@ pub fn run() {
             set_unsplash_key,
             lint_text,
             search_contacts,
+            search_all,
+            load_older,
             get_settings,
             save_settings,
             get_knowledge_base,

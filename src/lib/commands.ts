@@ -5,7 +5,7 @@ import { useUpdater } from "./updater";
 import type { Binding } from "./keyboard";
 import { popUndo, pushUndo } from "./undo";
 import { useCalendar } from "@/stores/calendar";
-import { useMail } from "@/stores/mail";
+import { useMail, visibleThreads } from "@/stores/mail";
 import { activeSignature, useSettings } from "@/stores/settings";
 import {
   actionTargetThreadId,
@@ -116,6 +116,17 @@ function pickedSuggestion(): string | undefined {
   return u.suggestionIndex === null
     ? undefined
     : u.suggestions[u.suggestionIndex];
+}
+
+/** Move the list cursor; while a thread is open, open the newly-selected one
+ *  too so j/k reads straight through the list (Superhuman-style). */
+function advanceConversation(dir: 1 | -1) {
+  const m = mail();
+  m.moveSelection(dir);
+  if (m.openThreadId) {
+    const t = visibleThreads(useMail.getState())[useMail.getState().selectedIndex];
+    if (t) void m.openThread(t.id);
+  }
 }
 
 /** Standard undo entry for a triage action: run the inverse, refresh, toast. */
@@ -361,15 +372,18 @@ export function allCommands(): Command[] {
       id: "list.next",
       title: "Next Conversation",
       group: "Navigate",
-      when: () => inList(),
-      run: () => mail().moveSelection(1),
+      // Works in the list AND while reading: in a thread, j/k advances to the
+      // next conversation and opens it (Superhuman-style), matching how people
+      // actually triage. Space (thread.scrollDown) handles scrolling a message.
+      when: () => onMailScreen(),
+      run: () => advanceConversation(1),
     },
     {
       id: "list.prev",
       title: "Previous Conversation",
       group: "Navigate",
-      when: () => inList(),
-      run: () => mail().moveSelection(-1),
+      when: () => onMailScreen(),
+      run: () => advanceConversation(-1),
     },
     {
       id: "thread.unread",
