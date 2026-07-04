@@ -65,6 +65,9 @@ Aligned with **Superhuman v7 (Windows & Linux edition)**. `mod` = `Ctrl` on Wind
 
 | Key | Action |
 |---|---|
+| `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | **Bold** / *italic* / underline |
+| `Ctrl+K` | Insert / edit a link on the selection |
+| `Ctrl+Shift+8` / `Ctrl+Shift+7` | Bullet list / numbered list |
 | `Ctrl+J` | Write with AI (empty body: draft from prompt · existing text: edit with instruction) |
 | `Ctrl+Enter` | Send — **with a 10-second Undo window (`Z`)** |
 | `Ctrl+Shift+Enter` | Send & Mark Done |
@@ -72,9 +75,11 @@ Aligned with **Superhuman v7 (Windows & Linux edition)**. `mod` = `Ctrl` on Wind
 | `Ctrl+;` | Insert snippet (from Settings → Knowledge Base) |
 | `Esc` | Close AI bar, then close compose — **the draft is saved automatically** (`G`,`D` resumes; Discard deletes) |
 
+Rich text: the compose body is a full **WYSIWYG editor** — the keys above, plus a compact formatting toolbar, and rich paste is accepted (and sanitized). Your signature renders and edits with its real formatting (bold, links, images). The message is sent as HTML with a plain-text fallback.
+
 Attachments: **📎 Attach** in compose (25 MB total). In the reading pane, click an attachment to open it, `⭳` to save. HTML mail renders sanitized (scripts stripped) with quoted trails collapsed behind `•••`.
 
-Spelling & grammar: the compose body is checked locally by **Harper** (nothing leaves the machine). Misspellings get a wavy underline — put the caret in one to see suggestions, click one to apply, `×` to ignore.
+Spelling & grammar: the compose body is checked locally by **Harper** (nothing leaves the machine). Misspellings get a wavy underline that follows your edits — put the caret in one to see suggestions, click one to apply, `×` to ignore.
 
 Recipients: start typing a name or email in **To**/**Cc** and the closest contacts you've corresponded with drop down (ranked by frequency + recency). `↓`/`↑` move, `Enter`/`Tab` or a click fills in `Name <email>`, `Esc` closes the dropdown. Contacts are derived locally from your synced mail — no extra Google permission.
 

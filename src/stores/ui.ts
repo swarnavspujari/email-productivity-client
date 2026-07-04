@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { backend } from "@/lib/ipc";
+import { sanitizeUserHtml } from "@/lib/sanitize";
 import { splitThreads, useMail, visibleThreads } from "./mail";
-import { useSettings } from "./settings";
+import { activeSignature, useSettings } from "./settings";
 import type { MailAttachment, OutgoingMail, ThreadId, ZeroEvent } from "@/lib/types";
 
 export type Screen = "mail" | "settings" | "search" | "calendar";
@@ -17,8 +18,7 @@ export interface ComposeState {
   to: string;
   cc: string;
   subject: string;
-  body: string;
-  signature: string; // active account's signature, appended on send
+  body: string; // rich HTML from the WYSIWYG editor (signature lives inside it)
   quote: string; // read-only quoted context shown under the editor
   attachments: MailAttachment[];
   /** Persisted-draft row backing this compose; null until first autosave. */
@@ -38,37 +38,98 @@ export function isHtmlSignature(sig: string): boolean {
   return /<\w+[^>]*>/.test(sig);
 }
 
+const BLOCK_TAGS = new Set([
+  "P", "DIV", "LI", "UL", "OL", "BLOCKQUOTE",
+  "H1", "H2", "H3", "H4", "H5", "H6", "TR", "TABLE",
+]);
+
+/** Flatten rich HTML to plain text, preserving block/line breaks so the
+ *  plain-text MIME alternative reads correctly (textContent alone runs
+ *  paragraphs together). Used for the send fallback and the blank check. */
 function htmlToText(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  return (doc.body.textContent ?? "").trim();
+  let out = "";
+  const walk = (node: Node) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.textContent ?? "";
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const tag = (child as HTMLElement).tagName;
+        if (tag === "BR") {
+          out += "\n";
+          continue;
+        }
+        walk(child);
+        if (BLOCK_TAGS.has(tag)) out += "\n";
+      }
+    }
+  };
+  walk(doc.body);
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** The one place a compose window turns into an outgoing message. */
+/** The active account's signature as compose-ready HTML, seeded into the
+ *  editor body so it renders and edits with its real formatting (a plain-text
+ *  signature becomes a line-broken paragraph). */
+export function signatureHtml(): string {
+  const sig = activeSignature();
+  if (!sig) return "";
+  return isHtmlSignature(sig)
+    ? sig
+    : `<p>${escapeHtml(sig).replace(/\n/g, "<br>")}</p>`;
+}
+
+/** Split the rich body into the user's message and whether the seeded
+ *  signature is still present at the end. The signature is always seeded as a
+ *  suffix (`…<p></p>{signature}`), so it strips off as a plain-text suffix —
+ *  letting callers tell real content from an untouched signature-only body. */
+export function splitBodySignature(bodyHtml: string): {
+  message: string;
+  hasSignature: boolean;
+} {
+  const full = htmlToText(bodyHtml);
+  const sig = htmlToText(signatureHtml());
+  if (sig && full.endsWith(sig)) {
+    return { message: full.slice(0, full.length - sig.length).trim(), hasSignature: true };
+  }
+  return { message: full, hasSignature: false };
+}
+
+/** True when the rich body carries no content worth saving as a draft. An
+ *  empty editor serializes to `<p></p>`, and — since the signature now lives in
+ *  the body — an untouched compose is just the seeded signature; neither counts.
+ *  A user-inserted image does count (a signature's own image does not). */
+export function htmlBodyIsBlank(html: string): boolean {
+  if (!html) return true;
+  const { message, hasSignature } = splitBodySignature(html);
+  if (message !== "") return false;
+  if (/<img\b/i.test(html) && !hasSignature) return false;
+  return true;
+}
+
+/** The one place a compose window turns into an outgoing message. The body is
+ *  rich HTML from the editor; every message now carries an HTML alternative
+ *  (build_rfc822 emits multipart/alternative when bodyHtml is set) plus a
+ *  plain-text fallback. */
 export function outgoingFromCompose(c: ComposeState): OutgoingMail {
   const split = (raw: string) =>
     raw
       .split(/[,;]/)
       .map((s) => s.trim())
       .filter(Boolean);
-  const sigHtml = isHtmlSignature(c.signature);
-  const sigText = sigHtml ? htmlToText(c.signature) : c.signature.trim();
-  const bodyText = [c.body.trim(), sigText, c.quote.trim()]
-    .filter(Boolean)
-    .join("\n\n");
+  const quote = c.quote.trim();
 
-  // Rich signatures ride an HTML alternative; plain-text-only mail stays
-  // plain so nothing changes for people without a fancy signature.
-  let bodyHtml: string | null = null;
-  if (sigHtml) {
-    const esc = (t: string) => escapeHtml(t).replace(/\n/g, "<br>");
-    const parts = [`<div>${esc(c.body.trim())}</div>`];
-    parts.push(`<div>-- <br>${c.signature}</div>`);
-    if (c.quote.trim()) {
-      parts.push(
-        `<blockquote style="margin:8px 0 0 8px;padding-left:12px;border-left:2px solid #ccc;color:#666">${esc(c.quote.trim())}</blockquote>`
-      );
-    }
-    bodyHtml = parts.join("<br>");
+  // Sanitize outbound too: the editor accepts pasted rich text, and the Rust
+  // core only sanitizes INBOUND mail (ammonia).
+  const safeBody = sanitizeUserHtml(c.body).trim();
+  const bodyPlain = htmlToText(c.body);
+  const bodyText = [bodyPlain, quote].filter(Boolean).join("\n\n");
+
+  const htmlParts = [`<div>${safeBody || "<br>"}</div>`];
+  if (quote) {
+    htmlParts.push(
+      `<blockquote style="margin:8px 0 0 8px;padding-left:12px;border-left:2px solid #ccc;color:#666">${escapeHtml(quote).replace(/\n/g, "<br>")}</blockquote>`
+    );
   }
 
   return {
@@ -77,7 +138,7 @@ export function outgoingFromCompose(c: ComposeState): OutgoingMail {
     cc: split(c.cc),
     subject: c.subject || "(no subject)",
     bodyText,
-    bodyHtml,
+    bodyHtml: htmlParts.join(""),
     replyAll: c.mode === "replyAll",
     attachments: c.attachments,
   };

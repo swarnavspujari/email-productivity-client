@@ -6,10 +6,13 @@ import type { Binding } from "./keyboard";
 import { popUndo, pushUndo } from "./undo";
 import { useCalendar } from "@/stores/calendar";
 import { useMail, visibleThreads } from "@/stores/mail";
-import { activeSignatureText, useSettings } from "@/stores/settings";
+import { useSettings } from "@/stores/settings";
 import {
   actionTargetThreadId,
   actionTargetThreadIds,
+  escapeHtml,
+  htmlBodyIsBlank,
+  signatureHtml,
   useUi,
   type ComposeState,
 } from "@/stores/ui";
@@ -77,11 +80,14 @@ export async function startReply(
     msgs[msgs.length - 1];
 
   const subject = msgs[0].subject;
-  // Signature lives in the editable body now (not appended at send), so the
-  // user can tweak it per message. The reply is typed above it (blank line
-  // seeded so the caret — placed at the top on focus — has room).
-  const sig = activeSignatureText();
-  const body = sig ? `${presetBody ?? ""}\n\n${sig}` : (presetBody ?? "");
+  // The signature lives in the editable body now, as real HTML, so it renders
+  // and edits with its formatting. The reply is typed above it (the editor
+  // focuses the top on open); an empty paragraph separates the two.
+  const sig = signatureHtml();
+  const preset = presetBody
+    ? `<p>${escapeHtml(presetBody).replace(/\n/g, "<br>")}</p>`
+    : "<p></p>";
+  const body = sig ? `${preset}<p></p>${sig}` : preset;
   const base: ComposeState = {
     mode,
     threadId: id,
@@ -89,7 +95,6 @@ export async function startReply(
     cc: "",
     attachments: [],
     draftId: null,
-    signature: "",
     subject:
       mode === "forward"
         ? subject.startsWith("Fwd:")
@@ -167,17 +172,16 @@ export function allCommands(): Command[] {
       group: "Compose",
       when: () => !inCompose(),
       run: () => {
-        // Seed the signature into the editable body (blank line above for the
-        // message); nothing is appended at send.
-        const sig = activeSignatureText();
+        // Seed the signature (rich HTML) into the editable body, an empty
+        // paragraph above it for the message. Nothing is appended at send.
+        const sig = signatureHtml();
         return ui().startCompose({
           mode: "new",
           threadId: null,
           to: "",
           cc: "",
           subject: "",
-          body: sig ? `\n\n${sig}\n` : "",
-          signature: "",
+          body: sig ? `<p></p>${sig}` : "",
           quote: "",
           attachments: [],
           draftId: null,
@@ -301,8 +305,7 @@ export function allCommands(): Command[] {
             to: r.target,
             cc: "",
             subject: "Unsubscribe",
-            body: "Please unsubscribe me from this list.",
-            signature: "",
+            body: "<p>Please unsubscribe me from this list.</p>",
             quote: "",
             attachments: [],
             draftId: null,
@@ -775,7 +778,8 @@ export function allCommands(): Command[] {
           // Esc keeps your work: flush a final draft save, then close.
           const c = u.compose;
           const hasContent =
-            !!(c.to.trim() || c.subject.trim() || c.body.trim()) ||
+            !!(c.to.trim() || c.subject.trim()) ||
+            !htmlBodyIsBlank(c.body) ||
             c.attachments.length > 0;
           if (hasContent) {
             const { draftId, ...payload } = c;

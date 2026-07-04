@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Editor } from "@tiptap/react";
 import { backend } from "@/lib/ipc";
 import { formatKeyExpr } from "@/lib/keyboard";
 import { pushTriageUndo, shortcutHint } from "@/lib/commands";
 import { pushUndo } from "@/lib/undo";
 import { useMail } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
-import { outgoingFromCompose, useUi } from "@/stores/ui";
-import { LintedBody } from "./SpellCheck";
+import {
+  escapeHtml,
+  htmlBodyIsBlank,
+  outgoingFromCompose,
+  signatureHtml,
+  splitBodySignature,
+  useUi,
+} from "@/stores/ui";
+import { ComposeEditor } from "./ComposeEditor";
 import { RecipientInput } from "./RecipientInput";
 import type { MailAttachment } from "@/lib/types";
 
@@ -42,14 +50,17 @@ function readFileB64(file: File): Promise<MailAttachment> {
   });
 }
 
-/** The Ctrl+J "Write with AI" instruction bar. */
-function AiBar({
-  getBody,
-  setBody,
-}: {
-  getBody: () => string;
-  setBody: (updater: (prev: string) => string) => void;
-}) {
+/** Plain streamed AI text → simple paragraph HTML for the editor. */
+function paragraphsToHtml(text: string): string {
+  return text
+    .split(/\n{2,}/)
+    .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>") || "<br>"}</p>`)
+    .join("");
+}
+
+/** The Ctrl+J "Write with AI" instruction bar. Streams into the editor: a
+ *  fresh draft replaces the (empty) body, an edit rewrites it in place. */
+function AiBar({ editor }: { editor: Editor }) {
   const [instruction, setInstruction] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +68,12 @@ function AiBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const compose = useUi((s) => s.compose);
   const provider = useSettings((s) => s.settings.defaultAiProvider);
+  // "Has the user written a message?" — the seeded signature doesn't count, so a
+  // fresh compose with a signature still drafts from the prompt (not an edit).
+  const hasBody = useMemo(
+    () => splitBodySignature(editor.getHTML()).message.length > 0,
+    [editor]
+  );
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -67,30 +84,30 @@ function AiBar({
     if (!instruction.trim() || running) return;
     setError(null);
     setRunning(true);
-    const existing = getBody().trim();
-    const isEdit = existing.length > 0;
-    if (!isEdit) setBody(() => "");
+    // Draft from the user's MESSAGE only (never the signature), and keep the
+    // signature the user hasn't removed instead of overwriting the whole body.
+    const sig = signatureHtml();
+    const { message, hasSignature } = splitBodySignature(editor.getHTML());
+    const isEdit = message.length > 0;
+    const sigSuffix = hasSignature && sig ? `<p></p>${sig}` : "";
     let received = "";
     cancelRef.current = backend.aiDraft(
       {
         threadId: compose?.threadId ?? null,
         instruction,
-        existingText: isEdit ? existing : null,
+        existingText: isEdit ? message : null,
         providerId: null, // default provider; per-request override lives in Settings
       },
       {
         onChunk: (c) => {
           received += c;
-          if (isEdit) {
-            // edits arrive as a full rewrite — replace once content flows
-            setBody(() => received);
-          } else {
-            setBody((prev) => prev + c);
-          }
+          // emitUpdate=true so send + autosave see the streamed draft.
+          editor.commands.setContent(paragraphsToHtml(received) + sigSuffix, true);
         },
         onDone: () => {
           setRunning(false);
           setInstruction("");
+          editor.commands.focus("end");
         },
         onError: (e) => {
           setError(e);
@@ -111,11 +128,18 @@ function AiBar({
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") go();
-            if (e.key === "Escape") useUi.getState().setAiBarOpen(false);
+            if (e.key === "Enter") {
+              e.preventDefault();
+              go();
+            } else if (e.key === "Escape") {
+              // Close the AI bar only — don't bubble to the compose closer.
+              e.preventDefault();
+              e.stopPropagation();
+              useUi.getState().setAiBarOpen(false);
+            }
           }}
           placeholder={
-            getBody().trim()
+            hasBody
               ? 'Edit instruction — e.g. "make it warmer", "tighten to 3 sentences"'
               : 'What should this say? e.g. "confirm the 15th works, ask about wiring details"'
           }
@@ -144,22 +168,17 @@ export function Compose() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showQuote, setShowQuote] = useState(false);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const patch = (p: Partial<typeof compose>) =>
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, ...p } : null }));
 
-  useEffect(() => {
-    // New mail: focus To (the RecipientInput autofocuses itself), then Tab
-    // walks To → Cc → Subject → body. Replies/forwards go straight to the
-    // body with the caret at the very top, above the seeded signature.
-    if (compose.mode !== "new") {
-      const ta = bodyRef.current;
-      ta?.focus();
-      ta?.setSelectionRange(0, 0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Sync the editor's HTML into the store. Stable so it never churns the editor.
+  // (New mail focuses To; replies/forwards focus the body top — both handled by
+  // RecipientInput autoFocus and ComposeEditor's autofocus, so no effect here.)
+  const onBody = useCallback((body: string) => {
+    useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, body } : null }));
   }, []);
 
   // Autosave the draft while typing, so a crash or close loses nothing.
@@ -168,7 +187,8 @@ export function Compose() {
       const c = useUi.getState().compose;
       if (!c) return;
       const hasContent =
-        !!(c.to.trim() || c.subject.trim() || c.body.trim()) ||
+        !!(c.to.trim() || c.subject.trim()) ||
+        !htmlBodyIsBlank(c.body) ||
         c.attachments.length > 0;
       if (!hasContent) return;
       const { draftId, ...payload } = c;
@@ -312,11 +332,12 @@ export function Compose() {
           />
         </div>
 
-        <LintedBody
-          value={compose.body}
-          onChange={(body) => patch({ body })}
-          textareaRef={bodyRef}
+        <ComposeEditor
+          mode={compose.mode}
+          initialContent={compose.body}
           placeholder="Write, or press Ctrl+J to draft with AI…"
+          onChange={onBody}
+          onReady={setEditor}
         />
 
         {compose.attachments.length > 0 && (
@@ -366,18 +387,7 @@ export function Compose() {
           </div>
         )}
 
-        {aiBarOpen && (
-          <AiBar
-            getBody={() => useUi.getState().compose?.body ?? ""}
-            setBody={(updater) =>
-              useUi.setState((s) => ({
-                compose: s.compose
-                  ? { ...s.compose, body: updater(s.compose.body) }
-                  : null,
-              }))
-            }
-          />
-        )}
+        {aiBarOpen && editor && <AiBar editor={editor} />}
 
         <div className="flex items-center gap-3 border-t border-line px-4 py-3">
           <button

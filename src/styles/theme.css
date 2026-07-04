@@ -284,3 +284,82 @@ body {
 .zb-spin {
   animation: zb-spin 700ms linear infinite;
 }
+
+/* Rich compose editor (TipTap/ProseMirror). Headless — every color is a token,
+   so it tracks the active theme. Scoped to `.fm-editor` (set on the editable
+   node) to avoid touching the reading pane's sandboxed iframe. */
+.fm-editor {
+  padding: 12px 16px;
+  min-height: 100%;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.fm-editor:focus,
+.fm-editor:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.fm-editor p {
+  margin: 0 0 0.6em;
+}
+.fm-editor > :last-child {
+  margin-bottom: 0;
+}
+.fm-editor ul,
+.fm-editor ol {
+  margin: 0 0 0.6em;
+  padding-left: 1.5em;
+}
+.fm-editor ul {
+  list-style: disc;
+}
+.fm-editor ol {
+  list-style: decimal;
+}
+.fm-editor li {
+  margin: 0.1em 0;
+}
+.fm-editor li p {
+  margin: 0;
+}
+.fm-editor a {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.fm-editor blockquote {
+  margin: 0.4em 0;
+  padding-left: 0.8em;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+.fm-editor code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-hover);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+.fm-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+/* Placeholder (only on a truly empty editor) */
+.fm-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+/* Harper spell/grammar underline — an inline ProseMirror decoration. */
+.fm-lint {
+  text-decoration: underline wavy var(--danger);
+  -webkit-text-decoration: underline wavy var(--danger);
+  text-decoration-skip-ink: none;
+}
