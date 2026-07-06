@@ -70,6 +70,7 @@ export function useComposeController() {
     compose?.bcc,
     compose?.subject,
     compose?.body,
+    compose?.quote,
     compose?.attachments,
   ]);
 

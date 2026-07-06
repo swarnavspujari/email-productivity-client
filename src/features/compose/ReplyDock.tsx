@@ -273,28 +273,41 @@ export function ReplyDock() {
         onArrowDownAtEnd={() => dotsRef.current?.focus()}
       />
 
-      {/* Signature + quoted history — rendered faithfully, tucked behind a
-          subtle ••• (↓ from the message focuses it; Enter/click reveals it). */}
+      {/* Signature + quoted history — rendered faithfully AND editable in a
+          sandboxed frame, tucked behind a subtle ••• (↓ from the message
+          focuses it; Enter/click toggles it). */}
       {compose.quote.trim() && (
         <div className="px-4 pb-1">
-          {showQuote ? (
-            <QuoteFrame html={compose.quote} />
-          ) : (
-            <button
-              ref={dotsRef}
-              onClick={() => setShowQuote(true)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setShowQuote(true);
-                }
+          <button
+            ref={dotsRef}
+            onClick={() => setShowQuote((s) => !s)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setShowQuote((s) => !s);
+              }
+            }}
+            title={
+              showQuote
+                ? "Hide signature & quoted history"
+                : "Show signature & quoted history (editable)"
+            }
+            aria-label="Toggle signature and quoted history"
+            aria-expanded={showQuote}
+            className="fm-dots"
+          >
+            ···
+          </button>
+          {showQuote && (
+            <QuoteFrame
+              html={compose.quote}
+              editable
+              onChange={(q) => patch({ quote: q })}
+              onEscape={() => {
+                setShowQuote(false);
+                editor?.commands.focus("end");
               }}
-              title="Show signature & quoted history"
-              aria-label="Show signature and quoted history"
-              className="fm-dots"
-            >
-              ···
-            </button>
+            />
           )}
         </div>
       )}
