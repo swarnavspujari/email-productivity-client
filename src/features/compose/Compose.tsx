@@ -2,52 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { backend } from "@/lib/ipc";
 import { formatKeyExpr } from "@/lib/keyboard";
-import { pushTriageUndo, shortcutHint } from "@/lib/commands";
-import { pushUndo } from "@/lib/undo";
-import { useMail } from "@/stores/mail";
+import { shortcutHint } from "@/lib/commands";
 import { useSettings } from "@/stores/settings";
 import {
   escapeHtml,
-  htmlBodyIsBlank,
-  outgoingFromCompose,
   signatureHtml,
   splitBodySignature,
   useUi,
 } from "@/stores/ui";
 import { ComposeEditor } from "./ComposeEditor";
 import { RecipientInput } from "./RecipientInput";
-import type { MailAttachment } from "@/lib/types";
-
-const UNDO_SEND_MS = 10_000;
-const MAX_ATTACH_TOTAL = 25_000_000; // Gmail's raw-message ceiling
-
-function splitAddresses(raw: string): string[] {
-  return raw
-    .split(/[,;]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+import { useComposeController } from "./useComposeController";
 
 function fmtSize(bytes: number): string {
   if (bytes > 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   if (bytes > 1_000) return `${Math.round(bytes / 1_000)} KB`;
   return `${bytes} B`;
-}
-
-function readFileB64(file: File): Promise<MailAttachment> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onerror = () => reject(new Error(`could not read ${file.name}`));
-    r.onload = () => {
-      const url = String(r.result); // data:<mime>;base64,<data>
-      resolve({
-        filename: file.name,
-        mimeType: file.type || "application/octet-stream",
-        dataBase64: url.slice(url.indexOf(",") + 1),
-      });
-    };
-    r.readAsDataURL(file);
-  });
 }
 
 /** Plain streamed AI text → simple paragraph HTML for the editor. */
@@ -165,11 +135,9 @@ function AiBar({ editor }: { editor: Editor }) {
 export function Compose() {
   const compose = useUi((s) => s.compose)!;
   const aiBarOpen = useUi((s) => s.aiBarOpen);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showQuote, setShowQuote] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const { sending, error, fileRef, addFiles } = useComposeController();
 
   const patch = (p: Partial<typeof compose>) =>
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, ...p } : null }));
@@ -180,111 +148,6 @@ export function Compose() {
   const onBody = useCallback((body: string) => {
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, body } : null }));
   }, []);
-
-  // Autosave the draft while typing, so a crash or close loses nothing.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const c = useUi.getState().compose;
-      if (!c) return;
-      const hasContent =
-        !!(c.to.trim() || c.subject.trim()) ||
-        !htmlBodyIsBlank(c.body) ||
-        c.attachments.length > 0;
-      if (!hasContent) return;
-      const { draftId, ...payload } = c;
-      void backend
-        .saveDraft(draftId, JSON.stringify(payload))
-        .then((id) => {
-          const cur = useUi.getState().compose;
-          if (cur && cur.draftId !== id) {
-            useUi.setState((s) => ({
-              compose: s.compose ? { ...s.compose, draftId: id } : null,
-            }));
-          }
-        })
-        .catch(() => {});
-    }, 800);
-    return () => clearTimeout(t);
-  }, [compose.to, compose.cc, compose.subject, compose.body, compose.attachments]);
-
-  const addFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    const current = useUi.getState().compose;
-    if (!current) return;
-    const existing = current.attachments.reduce(
-      (n, a) => n + a.dataBase64.length * 0.75,
-      0
-    );
-    let total = existing;
-    const added: MailAttachment[] = [];
-    for (const f of Array.from(files)) {
-      total += f.size;
-      if (total > MAX_ATTACH_TOTAL) {
-        setError("Attachments exceed the 25 MB limit.");
-        break;
-      }
-      added.push(await readFileB64(f));
-    }
-    if (added.length) {
-      patch({ attachments: [...current.attachments, ...added] });
-    }
-  };
-
-  useEffect(() => {
-    const send = async (markDone: boolean) => {
-      const c = useUi.getState().compose;
-      if (!c || sending) return;
-      const to = splitAddresses(c.to);
-      if (to.length === 0) {
-        setError("Add at least one recipient.");
-        return;
-      }
-      setSending(true);
-      setError(null);
-      try {
-        // Queue with a 10s fuse instead of sending immediately — that fuse
-        // IS the Undo Send window (Z pulls the draft back).
-        const outboxId = await backend.queueMail(outgoingFromCompose(c), UNDO_SEND_MS);
-        if (c.draftId !== null) void backend.deleteDraft(c.draftId).catch(() => {});
-        const saved = { ...c, draftId: null };
-        useUi.getState().closeCompose();
-        pushUndo({
-          label: "Send",
-          expiresAt: Date.now() + UNDO_SEND_MS - 1_000,
-          run: async () => {
-            try {
-              await backend.cancelOutbox(outboxId);
-              useUi.getState().startCompose(saved);
-              useUi.getState().showToast("Send undone — draft restored");
-            } catch {
-              useUi.getState().showToast("Too late — already sent");
-            }
-          },
-        });
-        if (markDone && c.threadId) {
-          if (useMail.getState().openThreadId === c.threadId)
-            useMail.getState().closeThread();
-          const tid = c.threadId;
-          await useMail.getState().archive(tid);
-          pushTriageUndo("Mark Done", () => useMail.getState().moveToInbox(tid));
-          useUi.getState().showToast("Sent & marked done — Z to undo");
-          await useUi.getState().checkInboxZero();
-        } else {
-          useUi.getState().showToast("Sent — Z to undo");
-        }
-        await useMail.getState().refresh();
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setSending(false);
-      }
-    };
-    const handler = (e: Event) =>
-      void send(Boolean((e as CustomEvent).detail?.markDone));
-    window.addEventListener("fission:send", handler);
-    return () => window.removeEventListener("fission:send", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sending]);
 
   const modeLabel =
     compose.mode === "new"
@@ -334,6 +197,7 @@ export function Compose() {
 
         <ComposeEditor
           mode={compose.mode}
+          variant="modal"
           initialContent={compose.body}
           placeholder="Write, or press Ctrl+J to draft with AI…"
           onChange={onBody}

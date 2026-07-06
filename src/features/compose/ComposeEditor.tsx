@@ -11,6 +11,8 @@ import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
+import TextStyle from "@tiptap/extension-text-style";
+import Color from "@tiptap/extension-color";
 import { backend } from "@/lib/ipc";
 import { sanitizeUserHtml } from "@/lib/sanitize";
 import { escapeHtml, type ComposeMode } from "@/stores/ui";
@@ -20,6 +22,14 @@ import {
   Harper,
   type HarperFinding,
 } from "./harper";
+import { ReplyTrailer, focusCollapsedTrailer } from "./trailer";
+import { SelectionBubble } from "./SelectionBubble";
+
+/** How the editor is hosted: the "modal" new-message composer keeps its
+ *  persistent top toolbar and in-body signature; the inline "dock" reply
+ *  composer drops the toolbar for a selection bubble, gains text color, and
+ *  wraps its signature + quoted history in a collapsible trailer. */
+export type ComposeVariant = "modal" | "dock";
 
 /** Seed content for the editor. Rich HTML passes through; a legacy plain-text
  *  draft body (saved before the WYSIWYG editor) is converted to paragraphs so
@@ -201,12 +211,14 @@ function SuggestionBar({
 
 export function ComposeEditor({
   mode,
+  variant,
   initialContent,
   placeholder,
   onChange,
   onReady,
 }: {
   mode: ComposeMode;
+  variant: ComposeVariant;
   initialContent: string;
   placeholder: string;
   onChange: (html: string) => void;
@@ -215,6 +227,7 @@ export function ComposeEditor({
   // TipTap is uncontrolled: seed the body once, then sync OUT via onUpdate.
   const initialRef = useRef(toEditorHtml(initialContent));
   const [linkOpen, setLinkOpen] = useState(false);
+  const isDock = variant === "dock";
 
   const editor = useEditor({
     // Avoids React 18 StrictMode's flushSync-in-render warning; the editor
@@ -233,6 +246,9 @@ export function ComposeEditor({
       Image.configure({ allowBase64: true }),
       Placeholder.configure({ placeholder }),
       Harper.configure({ lint: (t) => backend.lintText(t), debounceMs: 350 }),
+      // The reply dock adds text color and the collapsible signature/quote
+      // trailer; the new-message modal keeps its simpler schema untouched.
+      ...(isDock ? [TextStyle, Color, ReplyTrailer] : []),
     ],
     content: initialRef.current,
     // Replies/forwards land the caret at the top, above the signature; new mail
@@ -242,7 +258,23 @@ export function ComposeEditor({
       attributes: { class: "fm-editor", "aria-label": "Message body" },
       // Accept rich paste, but strip anything active before ProseMirror parses.
       transformPastedHTML: (html) => sanitizeUserHtml(html),
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
+        // Dock: ↓ at the end of the message focuses the ••• trailer toggle,
+        // rather than trying to enter the hidden signature/quote region.
+        if (
+          isDock &&
+          event.key === "ArrowDown" &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey &&
+          !event.altKey
+        ) {
+          if (focusCollapsedTrailer(view)) {
+            event.preventDefault();
+            return true;
+          }
+          return false;
+        }
         const mod = event.ctrlKey || event.metaKey;
         if (!mod) return false;
         // Ctrl/Cmd+Enter (and +Shift) must send, not insert a hard break: block
@@ -275,60 +307,74 @@ export function ComposeEditor({
 
   return (
     <>
-      <div className="flex items-center gap-0.5 border-b border-line px-3 py-1">
-        {editor && (
-          <>
-            <TbBtn
-              title="Bold (Ctrl+B)"
-              active={editor.isActive("bold")}
-              onClick={() => editor.chain().focus().toggleBold().run()}
-            >
-              <span className="font-bold">B</span>
-            </TbBtn>
-            <TbBtn
-              title="Italic (Ctrl+I)"
-              active={editor.isActive("italic")}
-              onClick={() => editor.chain().focus().toggleItalic().run()}
-            >
-              <span className="italic">I</span>
-            </TbBtn>
-            <TbBtn
-              title="Underline (Ctrl+U)"
-              active={editor.isActive("underline")}
-              onClick={() => editor.chain().focus().toggleUnderline().run()}
-            >
-              <span className="underline">U</span>
-            </TbBtn>
-            <span className="mx-1 h-4 w-px bg-line" />
-            <TbBtn
-              title="Bullet list"
-              active={editor.isActive("bulletList")}
-              onClick={() => editor.chain().focus().toggleBulletList().run()}
-            >
-              •
-            </TbBtn>
-            <TbBtn
-              title="Numbered list"
-              active={editor.isActive("orderedList")}
-              onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            >
-              1.
-            </TbBtn>
-            <span className="mx-1 h-4 w-px bg-line" />
-            <TbBtn
-              title="Link (Ctrl+K)"
-              active={editor.isActive("link")}
-              onClick={() => setLinkOpen(true)}
-            >
-              🔗
-            </TbBtn>
-          </>
-        )}
-      </div>
+      {/* The modal keeps a persistent toolbar; the dock formats via the
+          selection bubble only (Superhuman-style). */}
+      {!isDock && (
+        <div className="flex items-center gap-0.5 border-b border-line px-3 py-1">
+          {editor && (
+            <>
+              <TbBtn
+                title="Bold (Ctrl+B)"
+                active={editor.isActive("bold")}
+                onClick={() => editor.chain().focus().toggleBold().run()}
+              >
+                <span className="font-bold">B</span>
+              </TbBtn>
+              <TbBtn
+                title="Italic (Ctrl+I)"
+                active={editor.isActive("italic")}
+                onClick={() => editor.chain().focus().toggleItalic().run()}
+              >
+                <span className="italic">I</span>
+              </TbBtn>
+              <TbBtn
+                title="Underline (Ctrl+U)"
+                active={editor.isActive("underline")}
+                onClick={() => editor.chain().focus().toggleUnderline().run()}
+              >
+                <span className="underline">U</span>
+              </TbBtn>
+              <span className="mx-1 h-4 w-px bg-line" />
+              <TbBtn
+                title="Bullet list"
+                active={editor.isActive("bulletList")}
+                onClick={() => editor.chain().focus().toggleBulletList().run()}
+              >
+                •
+              </TbBtn>
+              <TbBtn
+                title="Numbered list"
+                active={editor.isActive("orderedList")}
+                onClick={() => editor.chain().focus().toggleOrderedList().run()}
+              >
+                1.
+              </TbBtn>
+              <span className="mx-1 h-4 w-px bg-line" />
+              <TbBtn
+                title="Link (Ctrl+K)"
+                active={editor.isActive("link")}
+                onClick={() => setLinkOpen(true)}
+              >
+                🔗
+              </TbBtn>
+            </>
+          )}
+        </div>
+      )}
 
-      <div className="relative min-h-0 flex-1 overflow-y-auto">
+      <div
+        className={
+          isDock
+            ? "relative max-h-[42vh] min-h-[108px] overflow-y-auto"
+            : "relative min-h-0 flex-1 overflow-y-auto"
+        }
+      >
         <EditorContent editor={editor} />
       </div>
+
+      {editor && isDock && (
+        <SelectionBubble editor={editor} onLink={() => setLinkOpen(true)} />
+      )}
 
       {editor &&
         (linkOpen ? (

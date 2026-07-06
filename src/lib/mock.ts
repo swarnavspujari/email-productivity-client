@@ -94,6 +94,13 @@ function loadPersisted(): PersistedState {
       if (merged.settings.shortcuts["thread.trash"] === "#") {
         merged.settings.shortcuts["thread.trash"] = "#|delete|backspace";
       }
+      // v0.11: arrows scroll the reader / move the list cursor, leaving j/k
+      if (merged.settings.shortcuts["list.next"] === "j|down") {
+        merged.settings.shortcuts["list.next"] = "j";
+      }
+      if (merged.settings.shortcuts["list.prev"] === "k|up") {
+        merged.settings.shortcuts["list.prev"] = "k";
+      }
       return merged;
     }
   } catch {

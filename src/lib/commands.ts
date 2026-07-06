@@ -10,8 +10,8 @@ import { useSettings } from "@/stores/settings";
 import {
   actionTargetThreadId,
   actionTargetThreadIds,
+  composeHasContent,
   escapeHtml,
-  htmlBodyIsBlank,
   signatureHtml,
   useUi,
   type ComposeState,
@@ -50,9 +50,28 @@ const calendarFocused = () =>
 
 // ---- compose helpers --------------------------------------------------------
 
-function quoteOf(m: Message): string {
+/** The quoted original as editable HTML for the reply trailer: an attribution
+ *  line + a blockquote of the source text (mirrors what the send path emitted
+ *  before, but now lives inside the editable body behind the •••). */
+function quoteHtmlOf(m: Message): string {
   const when = new Date(m.date).toLocaleString();
-  return `On ${when}, ${m.fromName} <${m.from}> wrote:\n> ${m.bodyText.split("\n").join("\n> ")}`;
+  const attribution = `On ${escapeHtml(when)}, ${escapeHtml(m.fromName)} &lt;${escapeHtml(
+    m.from
+  )}&gt; wrote:`;
+  const quoted = escapeHtml(m.bodyText).replace(/\n/g, "<br>");
+  return `<p>${attribution}</p><blockquote>${quoted}</blockquote>`;
+}
+
+/** Assemble a reply/forward body: the user's (usually empty) message on top,
+ *  then the signature + quoted history wrapped in the collapsible trailer div.
+ *  The caret lands at the top; the trailer starts collapsed behind the •••. */
+function buildReplyBody(presetBody: string | undefined, sigHtml: string, quoteHtml: string): string {
+  const message = presetBody
+    ? `<p>${escapeHtml(presetBody).replace(/\n/g, "<br>")}</p>`
+    : "<p></p>";
+  const trailerInner = [sigHtml, quoteHtml].filter(Boolean).join("");
+  const trailer = trailerInner ? `<div data-fm-trailer="">${trailerInner}</div>` : "";
+  return message + trailer;
 }
 
 async function messagesFor(id: ThreadId): Promise<Message[]> {
@@ -80,19 +99,17 @@ export async function startReply(
     msgs[msgs.length - 1];
 
   const subject = msgs[0].subject;
-  // The signature lives in the editable body now, as real HTML, so it renders
-  // and edits with its formatting. The reply is typed above it (the editor
-  // focuses the top on open); an empty paragraph separates the two.
-  const sig = signatureHtml();
-  const preset = presetBody
-    ? `<p>${escapeHtml(presetBody).replace(/\n/g, "<br>")}</p>`
-    : "<p></p>";
-  const body = sig ? `${preset}<p></p>${sig}` : preset;
+  // Superhuman-style: the reply body opens empty with the caret on top, and the
+  // signature + quoted history sit below it inside the collapsible trailer —
+  // fully editable, just hidden behind the •••. It all sends (getHTML serializes
+  // the trailer), so `quote` stays empty here (no separate append at send).
+  const body = buildReplyBody(presetBody, signatureHtml(), quoteHtmlOf(last));
   const base: ComposeState = {
     mode,
     threadId: id,
     to: "",
     cc: "",
+    bcc: "",
     attachments: [],
     draftId: null,
     subject:
@@ -104,7 +121,7 @@ export async function startReply(
           ? subject
           : `Re: ${subject}`,
     body,
-    quote: quoteOf(last),
+    quote: "",
   };
   if (mode === "reply") {
     base.to = last.from;
@@ -118,6 +135,9 @@ export async function startReply(
     base.to = first ?? "";
     base.cc = rest.join(", ");
   }
+  // The composer docks inline in the reader, so make sure the thread is open
+  // (e.g. when replying straight from a list selection).
+  if (mail().openThreadId !== id) await mail().openThread(id);
   ui().startCompose(base);
 }
 
@@ -126,6 +146,22 @@ function pickedSuggestion(): string | undefined {
   return u.suggestionIndex === null
     ? undefined
     : u.suggestions[u.suggestionIndex];
+}
+
+/** Scroll the open thread's reading pane by a fraction of its viewport.
+ *  Instant (not smooth) so it feels immediate and works in headless tests. */
+function scrollReader(fraction: number) {
+  const el = document.querySelector<HTMLElement>("[data-thread-scroll]");
+  el?.scrollBy({ top: el.clientHeight * fraction });
+}
+
+/** Ask the open reply dock to reveal + focus one of its recipient/subject
+ *  fields (Ctrl+Shift+O/C/B/S). The dock owns the field DOM, so this is an
+ *  event rather than store state. */
+function focusComposeField(field: "to" | "cc" | "bcc" | "subject") {
+  window.dispatchEvent(
+    new CustomEvent("fission:compose-field", { detail: { field } })
+  );
 }
 
 /** Move the list cursor; while a thread is open, open the newly-selected one
@@ -180,6 +216,7 @@ export function allCommands(): Command[] {
           threadId: null,
           to: "",
           cc: "",
+          bcc: "",
           subject: "",
           body: sig ? `<p></p>${sig}` : "",
           quote: "",
@@ -304,6 +341,7 @@ export function allCommands(): Command[] {
             threadId: null,
             to: r.target,
             cc: "",
+            bcc: "",
             subject: "Unsubscribe",
             body: "<p>Please unsubscribe me from this list.</p>",
             quote: "",
@@ -468,16 +506,57 @@ export function allCommands(): Command[] {
       when: () => inThread() && ui().suggestions.length > 0,
       run: () => ui().cycleSuggestion(),
     },
+    // Space pages the open email down; Shift+Space pages up. ↓/↑ nudge it a
+    // shorter step. J/K (list.next/prev) stay on conversations — so in the
+    // reader the arrows scroll the message while J/K change conversation, and
+    // in the list the arrows move the cursor (list.cursorDown/Up below).
     {
       id: "thread.scrollDown",
       title: "Scroll Message Down",
       group: "Navigate",
       hidden: true,
       when: () => inThread(),
-      run: () => {
-        const el = document.querySelector<HTMLElement>("[data-thread-scroll]");
-        el?.scrollBy({ top: el.clientHeight * 0.5 });
-      },
+      run: () => scrollReader(0.9),
+    },
+    {
+      id: "reader.pageUp",
+      title: "Scroll Message Up",
+      group: "Navigate",
+      hidden: true,
+      when: () => inThread(),
+      run: () => scrollReader(-0.9),
+    },
+    {
+      id: "reader.lineDown",
+      title: "Scroll Message Down a Little",
+      group: "Navigate",
+      hidden: true,
+      when: () => inThread(),
+      run: () => scrollReader(0.3),
+    },
+    {
+      id: "reader.lineUp",
+      title: "Scroll Message Up a Little",
+      group: "Navigate",
+      hidden: true,
+      when: () => inThread(),
+      run: () => scrollReader(-0.3),
+    },
+    {
+      id: "list.cursorDown",
+      title: "Move Cursor Down",
+      group: "Navigate",
+      hidden: true,
+      when: () => inList(),
+      run: () => mail().moveSelection(1),
+    },
+    {
+      id: "list.cursorUp",
+      title: "Move Cursor Up",
+      group: "Navigate",
+      hidden: true,
+      when: () => inList(),
+      run: () => mail().moveSelection(-1),
     },
     {
       id: "goto.inbox",
@@ -620,6 +699,40 @@ export function allCommands(): Command[] {
       group: "Compose",
       when: () => inCompose(),
       run: () => ui().openPicker("snippet"),
+    },
+    // Reveal + focus a reply-dock field. These fire even while typing (mod+
+    // combos pass the editable guard); Tab then walks To→Cc→Bcc→Subject→body.
+    {
+      id: "compose.expandTo",
+      title: "Reply: Edit To",
+      group: "Compose",
+      hidden: true,
+      when: () => inCompose(),
+      run: () => focusComposeField("to"),
+    },
+    {
+      id: "compose.expandCc",
+      title: "Reply: Add Cc",
+      group: "Compose",
+      hidden: true,
+      when: () => inCompose(),
+      run: () => focusComposeField("cc"),
+    },
+    {
+      id: "compose.expandBcc",
+      title: "Reply: Add Bcc",
+      group: "Compose",
+      hidden: true,
+      when: () => inCompose(),
+      run: () => focusComposeField("bcc"),
+    },
+    {
+      id: "compose.expandSubject",
+      title: "Reply: Edit Subject",
+      group: "Compose",
+      hidden: true,
+      when: () => inCompose(),
+      run: () => focusComposeField("subject"),
     },
     {
       id: "theme.toggle",
@@ -775,13 +888,11 @@ export function allCommands(): Command[] {
         if (inList() && mail().selectedIds.size > 0)
           return mail().clearSelection();
         if (u.compose) {
-          // Esc keeps your work: flush a final draft save, then close.
+          // Esc keeps your work: flush a final draft save, then close. An
+          // opened-then-abandoned reply (auto-filled recipients, empty body)
+          // isn't worth saving — composeHasContent handles that.
           const c = u.compose;
-          const hasContent =
-            !!(c.to.trim() || c.subject.trim()) ||
-            !htmlBodyIsBlank(c.body) ||
-            c.attachments.length > 0;
-          if (hasContent) {
+          if (composeHasContent(c)) {
             const { draftId, ...payload } = c;
             void backend
               .saveDraft(draftId, JSON.stringify(payload))

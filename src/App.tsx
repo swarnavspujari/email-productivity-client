@@ -248,7 +248,9 @@ export default function App() {
         {screen === "search" && <SearchScreen />}
         {screen === "settings" && <SettingsScreen />}
 
-        {compose && <Compose />}
+        {/* New-message compose is the modal; replies/forwards dock inline in
+            ThreadView (see ReplyDock). */}
+        {compose && compose.mode === "new" && <Compose />}
         {askAiOpen && <AskAi />}
         {paletteOpen && <CommandPalette />}
         {picker === "snooze" && <SnoozePicker />}

@@ -648,6 +648,11 @@ pub fn build_rfc822(
     if !mail.cc.is_empty() {
         headers.push(format!("Cc: {}", mail.cc.join(", ")));
     }
+    // Gmail derives recipients from the raw message and strips Bcc from the
+    // delivered copies, so a header is all that's needed to blind-copy.
+    if !mail.bcc.is_empty() {
+        headers.push(format!("Bcc: {}", mail.bcc.join(", ")));
+    }
     headers.push(format!("Subject: {}", mail.subject.replace(['\r', '\n'], " ")));
     headers.push(format!("Date: {date}"));
     if let Some(irt) = in_reply_to {

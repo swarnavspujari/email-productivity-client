@@ -6,6 +6,7 @@ import { useUi } from "@/stores/ui";
 import { Avatar } from "@/components/Avatar";
 import { ContactPanel } from "@/components/ContactPanel";
 import { Label } from "@/components/Label";
+import { ReplyDock } from "@/features/compose/ReplyDock";
 import type { Attachment, Message } from "@/lib/types";
 
 function fmtSize(bytes: number): string {
@@ -343,6 +344,11 @@ export function ThreadView() {
   const threadId = useMail((s) => s.openThreadId);
   const theme = useSettings((s) => s.settings.theme);
   const myEmail = useSettings((s) => s.accounts.active);
+  const compose = useUi((s) => s.compose);
+  // A reply/forward for THIS thread docks its composer inline at the bottom
+  // (new-message compose stays the modal); Instant Replies hide while it's open.
+  const replyingHere =
+    !!compose && compose.threadId === threadId && compose.mode !== "new";
   // Superhuman-style: older messages collapse; the last (and any unread)
   // stay open. User toggles override until the thread changes.
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
@@ -445,7 +451,7 @@ export function ThreadView() {
             <div ref={endRef} />
           </div>
         </div>
-        <InstantReplies />
+        {replyingHere ? <ReplyDock /> : <InstantReplies />}
       </div>
       <ContactPanel
         name={contact.fromName}

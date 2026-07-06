@@ -43,6 +43,8 @@ export function DraftsPicker() {
         }
         useUi.getState().startCompose({
           ...parsed,
+          // Drafts saved before Bcc existed have no bcc field.
+          bcc: parsed.bcc ?? "",
           attachments: parsed.attachments ?? [],
           draftId: d.id,
         });

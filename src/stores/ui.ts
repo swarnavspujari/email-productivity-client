@@ -17,13 +17,20 @@ export interface ComposeState {
   threadId: ThreadId | null;
   to: string;
   cc: string;
+  bcc: string;
   subject: string;
   body: string; // rich HTML from the WYSIWYG editor (signature lives inside it)
-  quote: string; // read-only quoted context shown under the editor
+  /** Read-only quoted context appended at send (new-message compose only; a
+   *  reply carries its quote *inside* the editable body, behind the •••). */
+  quote: string;
   attachments: MailAttachment[];
   /** Persisted-draft row backing this compose; null until first autosave. */
   draftId: number | null;
 }
+
+/** Marker attribute on the reply's collapsible "trailer" — the div wrapping the
+ *  editable-but-hidden signature + quoted history (see compose/trailer.ts). */
+export const TRAILER_MARKER = "data-fm-trailer";
 
 export function escapeHtml(s: string): string {
   return s.replace(
@@ -95,16 +102,55 @@ export function splitBodySignature(bodyHtml: string): {
   return { message: full, hasSignature: false };
 }
 
+/** Split a reply's rich body into the user's message and the collapsible
+ *  trailer (the editable-but-hidden signature + quoted history behind •••).
+ *  A new-message compose has no trailer marker, so the whole body is the
+ *  message. Both halves are returned as HTML. */
+export function splitMessageTrailer(bodyHtml: string): {
+  messageHtml: string;
+  trailerHtml: string;
+  hasTrailer: boolean;
+} {
+  if (!bodyHtml || !bodyHtml.toLowerCase().includes(TRAILER_MARKER)) {
+    return { messageHtml: bodyHtml, trailerHtml: "", hasTrailer: false };
+  }
+  const doc = new DOMParser().parseFromString(bodyHtml, "text/html");
+  const trailer = doc.querySelector(`[${TRAILER_MARKER}]`);
+  if (!trailer) return { messageHtml: bodyHtml, trailerHtml: "", hasTrailer: false };
+  const trailerHtml = trailer.outerHTML;
+  trailer.remove();
+  return { messageHtml: doc.body.innerHTML, trailerHtml, hasTrailer: true };
+}
+
 /** True when the rich body carries no content worth saving as a draft. An
- *  empty editor serializes to `<p></p>`, and — since the signature now lives in
- *  the body — an untouched compose is just the seeded signature; neither counts.
- *  A user-inserted image does count (a signature's own image does not). */
+ *  empty editor serializes to `<p></p>`. For a new-message compose the seeded
+ *  signature lives in the body and doesn't count; for a reply, only the user's
+ *  message above the ••• counts — the seeded signature + quoted history never
+ *  make an empty reply look non-blank. A user-inserted image does count. */
 export function htmlBodyIsBlank(html: string): boolean {
   if (!html) return true;
+  const { messageHtml, hasTrailer } = splitMessageTrailer(html);
+  if (hasTrailer) {
+    if (htmlToText(messageHtml).trim() !== "") return false;
+    if (/<img\b/i.test(messageHtml)) return false;
+    return true;
+  }
   const { message, hasSignature } = splitBodySignature(html);
   if (message !== "") return false;
   if (/<img\b/i.test(html) && !hasSignature) return false;
   return true;
+}
+
+/** Is this compose worth persisting as a draft? For a NEW message, any of
+ *  recipients / subject / body / attachments counts. For a REPLY or FORWARD the
+ *  recipients and "Re:/Fwd:" subject are auto-filled, so they don't count —
+ *  only a real (non-blank) message or an attachment does. This keeps an
+ *  opened-then-abandoned reply from leaving a junk draft behind. */
+export function composeHasContent(c: ComposeState): boolean {
+  if (!htmlBodyIsBlank(c.body)) return true;
+  if (c.attachments.length > 0) return true;
+  if (c.mode === "new") return !!(c.to.trim() || c.subject.trim());
+  return false;
 }
 
 /** The one place a compose window turns into an outgoing message. The body is
@@ -136,6 +182,7 @@ export function outgoingFromCompose(c: ComposeState): OutgoingMail {
     threadId: c.threadId,
     to: split(c.to),
     cc: split(c.cc),
+    bcc: split(c.bcc ?? ""),
     subject: c.subject || "(no subject)",
     bodyText,
     bodyHtml: htmlParts.join(""),

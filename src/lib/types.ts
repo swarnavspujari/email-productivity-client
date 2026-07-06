@@ -180,6 +180,7 @@ export interface OutgoingMail {
   threadId: ThreadId | null; // reply target, null = new thread
   to: string[];
   cc: string[];
+  bcc: string[];
   subject: string;
   bodyText: string;
   /** HTML alternative (signatures with images); null = plain text only. */

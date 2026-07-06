@@ -231,6 +231,8 @@ pub struct OutgoingMail {
     pub thread_id: Option<String>,
     pub to: Vec<String>,
     pub cc: Vec<String>,
+    #[serde(default)]
+    pub bcc: Vec<String>,
     pub subject: String,
     pub body_text: String,
     /// HTML alternative (signatures with images); None = plain text only.

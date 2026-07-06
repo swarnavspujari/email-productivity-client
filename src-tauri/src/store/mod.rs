@@ -215,8 +215,15 @@ pub fn default_settings() -> Settings {
         ("thread.reply", "r"),
         ("thread.forward", "f"),
         ("thread.replyAllOrOpen", "enter"),
-        ("list.next", "j|down"),
-        ("list.prev", "k|up"),
+        // J/K change conversation; arrows scroll the open email (reader) or
+        // move the cursor (list). v0.11 dropped down/up from list.next/prev.
+        ("list.next", "j"),
+        ("list.prev", "k"),
+        ("list.cursorDown", "down"),
+        ("list.cursorUp", "up"),
+        ("reader.lineDown", "down"),
+        ("reader.lineUp", "up"),
+        ("reader.pageUp", "shift+space"),
         ("thread.unread", "u"),
         ("thread.move", "v"),
         ("thread.replyAll", "a"),
@@ -243,6 +250,10 @@ pub fn default_settings() -> Settings {
         ("compose.sendDone", "mod+shift+enter"),
         ("compose.sendLater", "mod+shift+l"),
         ("compose.snippet", "mod+;"),
+        ("compose.expandTo", "mod+shift+o"),
+        ("compose.expandCc", "mod+shift+c"),
+        ("compose.expandBcc", "mod+shift+b"),
+        ("compose.expandSubject", "mod+shift+s"),
         ("theme.toggle", ""),
         ("calendar.toggle", ""),
         ("calendar.open", "g c"),
@@ -361,6 +372,19 @@ pub fn get_settings(conn: &Connection) -> Settings {
             if let Some(v) = s.shortcuts.get_mut("thread.trash") {
                 if v == "#" {
                     *v = "#|delete|backspace".into();
+                }
+            }
+            // v0.11: arrows now scroll the reader / move the list cursor, so
+            // they leave j/k. Drop the old down/up alias from saved copies on
+            // the old default; custom remaps survive.
+            if let Some(v) = s.shortcuts.get_mut("list.next") {
+                if v == "j|down" {
+                    *v = "j".into();
+                }
+            }
+            if let Some(v) = s.shortcuts.get_mut("list.prev") {
+                if v == "k|up" {
+                    *v = "k".into();
                 }
             }
             for p in defaults.providers {
