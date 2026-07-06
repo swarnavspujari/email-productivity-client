@@ -364,40 +364,30 @@ body {
   text-decoration-skip-ink: none;
 }
 
-/* Reply dock: the editable-but-collapsible signature + quoted-history trailer.
-   The content stays in the ProseMirror doc (so it always sends); collapsing
-   only hides it visually behind the ••• toggle. */
-.fm-trailer {
-  margin: 0.5em 0 0;
-}
-.fm-trailer[data-collapsed="true"] .fm-trailer-body {
-  display: none;
-}
-.fm-trailer-toggle {
+/* Reply dock: the subtle ••• that reveals the signature + quoted history.
+   Deliberately quiet — a faint row of dots, no pill, no border. */
+.fm-dots {
   display: inline-flex;
   align-items: center;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  padding: 0 8px;
-  line-height: 1.4;
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  justify-content: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 1px;
   color: var(--text-muted);
+  opacity: 0.6;
   cursor: pointer;
   user-select: none;
+  transition: opacity 0.12s ease, color 0.12s ease;
 }
-.fm-trailer-toggle:hover,
-.fm-trailer-toggle:focus-visible {
+.fm-dots:hover,
+.fm-dots:focus-visible {
+  opacity: 1;
+  color: var(--text-secondary);
   background: var(--bg-hover);
-  color: var(--text-primary);
   outline: none;
-}
-.fm-trailer[data-collapsed="false"] .fm-trailer-toggle {
-  color: var(--accent-strong);
-  border-color: var(--accent-dim);
-}
-.fm-trailer-body {
-  margin-top: 0.5em;
 }
 
 /* Floating selection formatting bubble (reply dock). Positioned via JS with

@@ -50,28 +50,22 @@ const calendarFocused = () =>
 
 // ---- compose helpers --------------------------------------------------------
 
-/** The quoted original as editable HTML for the reply trailer: an attribution
- *  line + a blockquote of the source text (mirrors what the send path emitted
- *  before, but now lives inside the editable body behind the •••). */
-function quoteHtmlOf(m: Message): string {
+/** The reply's "trimmed content" behind the •••: the signature + an attribution
+ *  line + the ORIGINAL message as rich HTML. It is rendered faithfully in a
+ *  sandboxed frame (ProseMirror would strip a newsletter's tables/layout) and
+ *  appended at send. Prefer the original's HTML so it keeps its images/layout;
+ *  fall back to text only when there is no HTML part. */
+function replyTrailerHtml(m: Message): string {
+  const sig = signatureHtml();
   const when = new Date(m.date).toLocaleString();
-  const attribution = `On ${escapeHtml(when)}, ${escapeHtml(m.fromName)} &lt;${escapeHtml(
-    m.from
-  )}&gt; wrote:`;
-  const quoted = escapeHtml(m.bodyText).replace(/\n/g, "<br>");
-  return `<p>${attribution}</p><blockquote>${quoted}</blockquote>`;
-}
-
-/** Assemble a reply/forward body: the user's (usually empty) message on top,
- *  then the signature + quoted history wrapped in the collapsible trailer div.
- *  The caret lands at the top; the trailer starts collapsed behind the •••. */
-function buildReplyBody(presetBody: string | undefined, sigHtml: string, quoteHtml: string): string {
-  const message = presetBody
-    ? `<p>${escapeHtml(presetBody).replace(/\n/g, "<br>")}</p>`
-    : "<p></p>";
-  const trailerInner = [sigHtml, quoteHtml].filter(Boolean).join("");
-  const trailer = trailerInner ? `<div data-fm-trailer="">${trailerInner}</div>` : "";
-  return message + trailer;
+  const attribution = `<p class="fm-quote-attr">On ${escapeHtml(when)}, ${escapeHtml(
+    m.fromName
+  )} &lt;${escapeHtml(m.from)}&gt; wrote:</p>`;
+  const original =
+    m.bodyHtml && m.bodyHtml.trim()
+      ? m.bodyHtml
+      : `<div>${escapeHtml(m.bodyText).replace(/\n/g, "<br>")}</div>`;
+  return `${sig}${attribution}<blockquote class="fm-quote">${original}</blockquote>`;
 }
 
 async function messagesFor(id: ThreadId): Promise<Message[]> {
@@ -99,11 +93,13 @@ export async function startReply(
     msgs[msgs.length - 1];
 
   const subject = msgs[0].subject;
-  // Superhuman-style: the reply body opens empty with the caret on top, and the
-  // signature + quoted history sit below it inside the collapsible trailer —
-  // fully editable, just hidden behind the •••. It all sends (getHTML serializes
-  // the trailer), so `quote` stays empty here (no separate append at send).
-  const body = buildReplyBody(presetBody, signatureHtml(), quoteHtmlOf(last));
+  // Superhuman-style: the reply body opens empty with the caret on top. The
+  // signature + quoted history live in `quote` (rich HTML) — rendered faithfully
+  // behind the ••• in the dock and appended at send, NOT crammed into the
+  // schema-limited editor (which would strip a real email's layout).
+  const body = presetBody
+    ? `<p>${escapeHtml(presetBody).replace(/\n/g, "<br>")}</p>`
+    : "<p></p>";
   const base: ComposeState = {
     mode,
     threadId: id,
@@ -121,7 +117,7 @@ export async function startReply(
           ? subject
           : `Re: ${subject}`,
     body,
-    quote: "",
+    quote: replyTrailerHtml(last),
   };
   if (mode === "reply") {
     base.to = last.from;

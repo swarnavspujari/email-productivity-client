@@ -1,19 +1,20 @@
-// The inline reply composer: docked at the bottom of the open thread (not a
-// modal). Hitting Enter/R/A/F on a conversation smooth-scrolls to it, populates
-// the recipients, and focuses the body. The recipient/subject rows start
-// collapsed behind a one-line summary — Ctrl+Shift+O/C/B/S (or a click) reveals
-// and focuses one, and Tab then walks To→Cc→Bcc→Subject→body. Formatting is via
-// the selection bubble; the signature + quoted history live in the editable
-// trailer behind the ••• (see ComposeEditor's "dock" variant).
+// The inline reply composer, threaded into the conversation column at the same
+// width as the email above it (ThreadView renders it inside the message column).
+// The message is an editable TipTap surface; the signature + quoted history are
+// rendered faithfully (QuoteFrame) behind a subtle ••• and appended on send —
+// a schema editor can't render real email HTML without mangling it. Recipient
+// rows collapse to a one-line summary; Ctrl+Shift+O/C/B/S reveal + focus a
+// field, then Tab walks To→Cc→Bcc→Subject→body.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { backend } from "@/lib/ipc";
 import { formatKeyExpr } from "@/lib/keyboard";
 import { shortcutHint } from "@/lib/commands";
 import { useSettings } from "@/stores/settings";
-import { escapeHtml, splitMessageTrailer, useUi } from "@/stores/ui";
+import { escapeHtml, useUi } from "@/stores/ui";
 import { ComposeEditor } from "./ComposeEditor";
 import { RecipientInput } from "./RecipientInput";
+import { QuoteFrame } from "./QuoteFrame";
 import { useComposeController } from "./useComposeController";
 
 type Field = "to" | "cc" | "bcc" | "subject";
@@ -40,7 +41,6 @@ function summarize(raw: string): string {
     .join(", ");
 }
 
-/** Plain streamed AI text → simple paragraph HTML. */
 function paragraphsToHtml(text: string): string {
   return text
     .split(/\n{2,}/)
@@ -48,9 +48,8 @@ function paragraphsToHtml(text: string): string {
     .join("");
 }
 
-/** Ctrl+J AI bar for the dock. Trailer-aware: it drafts into the *message*
- *  region only and re-appends the (edited) signature + quote trailer, so AI
- *  never eats the signature or the quoted history. */
+/** Ctrl+J AI bar for the dock — drafts straight into the message (the signature
+ *  and quote live outside the editor now, so there's nothing to preserve). */
 function DockAiBar({ editor }: { editor: Editor }) {
   const [instruction, setInstruction] = useState("");
   const [running, setRunning] = useState(false);
@@ -59,11 +58,10 @@ function DockAiBar({ editor }: { editor: Editor }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const compose = useUi((s) => s.compose);
   const provider = useSettings((s) => s.settings.defaultAiProvider);
-  const hasBody = useMemo(() => {
-    const { messageHtml } = splitMessageTrailer(editor.getHTML());
-    const d = new DOMParser().parseFromString(messageHtml, "text/html");
-    return (d.body.textContent ?? "").trim().length > 0;
-  }, [editor]);
+  const messageText = () =>
+    new DOMParser().parseFromString(editor.getHTML(), "text/html").body.textContent?.trim() ??
+    "";
+  const hasBody = useMemo(() => messageText().length > 0, [editor]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -74,29 +72,24 @@ function DockAiBar({ editor }: { editor: Editor }) {
     if (!instruction.trim() || running) return;
     setError(null);
     setRunning(true);
-    const { messageHtml, trailerHtml } = splitMessageTrailer(editor.getHTML());
-    const msgText =
-      new DOMParser().parseFromString(messageHtml, "text/html").body.textContent?.trim() ??
-      "";
-    const isEdit = msgText.length > 0;
+    const existing = messageText();
     let received = "";
     cancelRef.current = backend.aiDraft(
       {
         threadId: compose?.threadId ?? null,
         instruction,
-        existingText: isEdit ? msgText : null,
+        existingText: existing.length > 0 ? existing : null,
         providerId: null,
       },
       {
         onChunk: (c) => {
           received += c;
-          // Keep the (possibly edited) trailer after the streamed message.
-          editor.commands.setContent(paragraphsToHtml(received) + trailerHtml, true);
+          editor.commands.setContent(paragraphsToHtml(received), true);
         },
         onDone: () => {
           setRunning(false);
           setInstruction("");
-          editor.commands.focus();
+          editor.commands.focus("end");
         },
         onError: (e) => {
           setError(e);
@@ -176,7 +169,9 @@ export function ReplyDock() {
   const { sending, error, fileRef, addFiles } = useComposeController();
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [showQuote, setShowQuote] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const dotsRef = useRef<HTMLButtonElement>(null);
 
   const patch = (p: Partial<typeof compose>) =>
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, ...p } : null }));
@@ -194,8 +189,7 @@ export function ReplyDock() {
     });
   }, []);
 
-  // Ctrl+Shift+O/C/B/S (dispatched by the keyboard engine) reveal + focus a
-  // field. Tab then walks the visible rows into the body natively.
+  // Ctrl+Shift+O/C/B/S (from the keyboard engine) reveal + focus a field.
   useEffect(() => {
     const handler = (e: Event) => {
       const field = (e as CustomEvent).detail?.field as Field | undefined;
@@ -205,8 +199,7 @@ export function ReplyDock() {
     return () => window.removeEventListener("fission:compose-field", handler);
   }, [focusField]);
 
-  // Opening the reply smooth-scrolls the thread to the bottom so the message
-  // you're replying to sits right above the dock (Superhuman behavior).
+  // Opening the reply smooth-scrolls the thread down so the dock is in view.
   useEffect(() => {
     const el = document.querySelector<HTMLElement>("[data-thread-scroll]");
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
@@ -236,8 +229,10 @@ export function ReplyDock() {
   }, [compose.to, compose.cc, compose.bcc]);
 
   return (
-    <div ref={rootRef} className="shrink-0 border-t border-line-strong bg-overlay">
-      {/* Collapsed recipient header (click or Ctrl+Shift+O/C/B/S to expand) */}
+    <div
+      ref={rootRef}
+      className="zb-fade-in mt-4 overflow-hidden rounded-[10px] border border-line-strong bg-raised"
+    >
       {expanded ? (
         <>
           <FieldRow field="to" label="To">
@@ -275,14 +270,41 @@ export function ReplyDock() {
         placeholder="Tip: Hit Ctrl+J for AI"
         onChange={onBody}
         onReady={setEditor}
+        onArrowDownAtEnd={() => dotsRef.current?.focus()}
       />
+
+      {/* Signature + quoted history — rendered faithfully, tucked behind a
+          subtle ••• (↓ from the message focuses it; Enter/click reveals it). */}
+      {compose.quote.trim() && (
+        <div className="px-4 pb-1">
+          {showQuote ? (
+            <QuoteFrame html={compose.quote} />
+          ) : (
+            <button
+              ref={dotsRef}
+              onClick={() => setShowQuote(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setShowQuote(true);
+                }
+              }}
+              title="Show signature & quoted history"
+              aria-label="Show signature and quoted history"
+              className="fm-dots"
+            >
+              ···
+            </button>
+          )}
+        </div>
+      )}
 
       {compose.attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 border-t border-line px-4 py-2">
           {compose.attachments.map((a, i) => (
             <span
               key={`${a.filename}-${i}`}
-              className="flex items-center gap-1.5 rounded-md border border-line-strong bg-raised py-1 pl-2.5 pr-1 text-[12px] text-ink-2"
+              className="flex items-center gap-1.5 rounded-md border border-line-strong bg-surface py-1 pl-2.5 pr-1 text-[12px] text-ink-2"
             >
               📎 {a.filename}
               <span className="text-ink-3">

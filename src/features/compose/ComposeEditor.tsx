@@ -13,6 +13,7 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import TextStyle from "@tiptap/extension-text-style";
 import Color from "@tiptap/extension-color";
+import { Selection } from "@tiptap/pm/state";
 import { backend } from "@/lib/ipc";
 import { sanitizeUserHtml } from "@/lib/sanitize";
 import { escapeHtml, type ComposeMode } from "@/stores/ui";
@@ -22,7 +23,6 @@ import {
   Harper,
   type HarperFinding,
 } from "./harper";
-import { ReplyTrailer, focusCollapsedTrailer } from "./trailer";
 import { SelectionBubble } from "./SelectionBubble";
 
 /** How the editor is hosted: the "modal" new-message composer keeps its
@@ -216,6 +216,7 @@ export function ComposeEditor({
   placeholder,
   onChange,
   onReady,
+  onArrowDownAtEnd,
 }: {
   mode: ComposeMode;
   variant: ComposeVariant;
@@ -223,6 +224,8 @@ export function ComposeEditor({
   placeholder: string;
   onChange: (html: string) => void;
   onReady: (editor: Editor) => void;
+  /** Dock only: ArrowDown at the end of the message (used to focus the •••). */
+  onArrowDownAtEnd?: () => void;
 }) {
   // TipTap is uncontrolled: seed the body once, then sync OUT via onUpdate.
   const initialRef = useRef(toEditorHtml(initialContent));
@@ -246,9 +249,9 @@ export function ComposeEditor({
       Image.configure({ allowBase64: true }),
       Placeholder.configure({ placeholder }),
       Harper.configure({ lint: (t) => backend.lintText(t), debounceMs: 350 }),
-      // The reply dock adds text color and the collapsible signature/quote
-      // trailer; the new-message modal keeps its simpler schema untouched.
-      ...(isDock ? [TextStyle, Color, ReplyTrailer] : []),
+      // The reply dock adds text color for the selection bubble; the
+      // new-message modal keeps its simpler schema untouched.
+      ...(isDock ? [TextStyle, Color] : []),
     ],
     content: initialRef.current,
     // Replies/forwards land the caret at the top, above the signature; new mail
@@ -259,21 +262,22 @@ export function ComposeEditor({
       // Accept rich paste, but strip anything active before ProseMirror parses.
       transformPastedHTML: (html) => sanitizeUserHtml(html),
       handleKeyDown: (view, event) => {
-        // Dock: ↓ at the end of the message focuses the ••• trailer toggle,
-        // rather than trying to enter the hidden signature/quote region.
+        // Dock: ↓ at the very end of the message hands off to the ••• (which
+        // reveals the signature + quoted history) instead of doing nothing.
         if (
           isDock &&
+          onArrowDownAtEnd &&
           event.key === "ArrowDown" &&
           !event.ctrlKey &&
           !event.metaKey &&
           !event.shiftKey &&
-          !event.altKey
+          !event.altKey &&
+          view.state.selection.empty &&
+          view.state.selection.$head.pos === Selection.atEnd(view.state.doc).from
         ) {
-          if (focusCollapsedTrailer(view)) {
-            event.preventDefault();
-            return true;
-          }
-          return false;
+          event.preventDefault();
+          onArrowDownAtEnd();
+          return true;
         }
         const mod = event.ctrlKey || event.metaKey;
         if (!mod) return false;
@@ -365,7 +369,7 @@ export function ComposeEditor({
       <div
         className={
           isDock
-            ? "relative max-h-[42vh] min-h-[108px] overflow-y-auto"
+            ? "relative min-h-[84px]"
             : "relative min-h-0 flex-1 overflow-y-auto"
         }
       >

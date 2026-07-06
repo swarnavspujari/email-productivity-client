@@ -448,10 +448,12 @@ export function ThreadView() {
                 />
               ))}
             </div>
+            {/* Threaded inline in the conversation column at the email's width. */}
+            {replyingHere && <ReplyDock />}
             <div ref={endRef} />
           </div>
         </div>
-        {replyingHere ? <ReplyDock /> : <InstantReplies />}
+        {!replyingHere && <InstantReplies />}
       </div>
       <ContactPanel
         name={contact.fromName}
