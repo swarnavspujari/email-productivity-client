@@ -5,6 +5,7 @@ import type {
   AccountInfo,
   AccountsState,
   AiProviderId,
+  Capabilities,
   KnowledgeBase,
   ProfileInfo,
   Settings,
@@ -14,6 +15,9 @@ import type {
 interface SettingsState {
   loaded: boolean;
   accounts: AccountsState;
+  /** Per-account OAuth grant coverage (Drive/Contacts/…); Google features
+   *  gate on this. Refreshed with the account list. */
+  capabilities: Record<string, Capabilities>;
   settings: Settings;
   kb: KnowledgeBase;
   streaks: Streaks;
@@ -27,9 +31,25 @@ interface SettingsState {
   reorderAccounts: (emails: string[]) => Promise<void>;
 }
 
+async function loadCapabilities(
+  accounts: AccountsState
+): Promise<Record<string, Capabilities>> {
+  const entries = await Promise.all(
+    accounts.accounts.map(async (a) => {
+      const caps = await backend.getCapabilities(a.email).catch(() => null);
+      return [a.email, caps] as const;
+    })
+  );
+  return Object.fromEntries(entries.filter(([, c]) => c !== null)) as Record<
+    string,
+    Capabilities
+  >;
+}
+
 export const useSettings = create<SettingsState>((set, get) => ({
   loaded: false,
   accounts: { accounts: [], active: "" },
+  capabilities: {},
   settings: defaultSettings(),
   kb: defaultKnowledgeBase(),
   streaks: { daily: 0, weekly: 0, lastZeroDay: null },
@@ -41,7 +61,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
       backend.getStreaks(),
       backend.getAccounts(),
     ]);
-    set({ settings, kb, streaks, accounts, loaded: true });
+    const capabilities = await loadCapabilities(accounts);
+    set({ settings, kb, streaks, accounts, capabilities, loaded: true });
   },
 
   save: async (patch) => {
@@ -62,7 +83,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
   },
 
   refreshAccounts: async () => {
-    set({ accounts: await backend.getAccounts() });
+    const accounts = await backend.getAccounts();
+    set({ accounts, capabilities: await loadCapabilities(accounts) });
   },
 
   switchAccount: async (email) => {
@@ -102,6 +124,20 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
 export function activeAccount(): AccountInfo | undefined {
   const s = useSettings.getState().accounts;
   return s.accounts.find((a) => a.email === s.active) ?? s.accounts[0];
+}
+
+/** The active account's grant coverage (all-false while unknown/loading). */
+export function activeCapabilities(): Capabilities {
+  const s = useSettings.getState();
+  return (
+    s.capabilities[s.accounts.active] ?? {
+      drive: false,
+      contacts: false,
+      calendarWrite: false,
+      settingsRead: false,
+      legacyGrant: false,
+    }
+  );
 }
 
 export function activeSignature(): string {

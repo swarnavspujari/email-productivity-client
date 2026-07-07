@@ -116,6 +116,18 @@ export interface Settings {
   undoSendSeconds: number;
 }
 
+/** Which Google features this account's OAuth grant actually covers. Users
+ *  can uncheck scopes on the consent screen; accounts connected before v0.12
+ *  predate the new scopes entirely (legacyGrant) — every Google feature gates
+ *  on this instead of assuming the full block was granted. */
+export interface Capabilities {
+  drive: boolean;
+  contacts: boolean;
+  calendarWrite: boolean;
+  settingsRead: boolean;
+  legacyGrant: boolean;
+}
+
 /** Connected-account profile shown in the header (picture is a data: URI). */
 export interface ProfileInfo {
   name: string;

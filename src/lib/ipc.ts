@@ -7,6 +7,7 @@ import type {
   AccountsState,
   AiProviderId,
   CalendarEvent,
+  Capabilities,
   Contact,
   DailyPhoto,
   DraftEntry,
@@ -52,6 +53,9 @@ export interface Backend {
   switchAccount(email: string): Promise<AccountsState>;
   reorderAccounts(emails: string[]): Promise<AccountsState>;
   hasGmailClient(): Promise<boolean>;
+  /** What the account's OAuth grant covers (Drive/Contacts/…) — features
+   *  gate on this; legacyGrant means "reconnect to unlock the new scopes". */
+  getCapabilities(email: string): Promise<Capabilities>;
   /** Blank strings reuse the OAuth client already in the keychain. */
   startOauth(clientId: string, clientSecret: string): Promise<AccountsState>;
   disconnect(email: string): Promise<AccountsState>;
@@ -181,6 +185,9 @@ class TauriBackend implements Backend {
   }
   hasGmailClient() {
     return invoke<boolean>("has_gmail_client");
+  }
+  getCapabilities(email: string) {
+    return invoke<Capabilities>("get_capabilities", { email });
   }
   startOauth(clientId: string, clientSecret: string) {
     return invoke<AccountsState>("start_oauth", { clientId, clientSecret });

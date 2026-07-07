@@ -120,6 +120,26 @@ fn default_undo_send() -> i64 {
     10
 }
 
+/// Which Google features this account's OAuth grant actually covers.
+/// Users can uncheck scopes on the consent screen, and accounts connected
+/// before v0.15 hold tokens that predate the new scopes entirely — every
+/// feature gates on this instead of assuming the full block was granted.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    /// Google Drive (attach from Drive, oversized→Drive-link, share-on-send).
+    pub drive: bool,
+    /// People API contacts (saved and/or "other" contacts autocomplete).
+    pub contacts: bool,
+    /// Full calendar scope (event CRUD) vs the old calendar.readonly.
+    pub calendar_write: bool,
+    /// gmail.settings.basic (send-as aliases).
+    pub settings_read: bool,
+    /// Connected before grant tracking existed — needs one reconnect to
+    /// grant (and record) the new scopes.
+    pub legacy_grant: bool,
+}
+
 /// Connected-account profile shown in the header (photo is a data: URI).
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]

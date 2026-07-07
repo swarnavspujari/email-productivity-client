@@ -1,8 +1,10 @@
 # Google OAuth: what your testers will see, and what verification takes
 
 Fission uses one Google Cloud OAuth client (project `fission-mail`, Desktop-app
-type) with the `gmail.modify` scope. This page covers the consent-screen
-states, exactly what beta testers experience, and the path past 100 users.
+type). Since v0.12 it requests one fixed scope block covering Gmail, Calendar
+(full), Drive, Contacts, and send-as settings — users consent exactly once.
+This page covers the consent-screen states, exactly what beta testers
+experience, and the path past 100 users.
 
 ## The three consent-screen states
 
@@ -20,13 +22,16 @@ does *not* require verification up front.
 ## One-time console steps (you must do these)
 
 1. **Enable the APIs the app calls.** ☰ → *APIs & Services* → *Library*, in
-   project `fission-mail`, and **Enable** both:
+   project `fission-mail`, and **Enable** all four:
    - **Gmail API**
    - **Google Calendar API** — easy to miss, and this is the one that bites:
      until it's enabled the calendar panel returns a 403
      (`accessNotConfigured` / "has not been used in project …") for **every**
      tester, no matter how many times they reconnect. Enabling it here fixes it
      for all testers at once. (Newly enabled APIs can take a minute to propagate.)
+   - **Google Drive API** (v0.12+) — Drive attachments and oversized-file
+     share links 403 with the same `accessNotConfigured` until it's on.
+   - **People API** (v0.12+) — contacts autocomplete.
 2. <https://console.cloud.google.com/apis/credentials/consent> → project
    `fission-mail`.
 3. Confirm **User type: External**.
@@ -89,11 +94,30 @@ Cheaper alternatives if the cap ever bites before verification:
 | Scope | Why | Tier |
 |---|---|---|
 | `gmail.modify` | read, archive, label, star, trash, send | restricted |
+| `gmail.settings.basic` (v0.12+) | read send-as aliases + signatures | restricted family |
 | `openid email profile` (v0.6+) | account email + profile photo in the UI | non-sensitive |
-| `calendar.readonly` (v0.7+) | the calendar side panel | sensitive |
+| `calendar` (v0.12+, replaces `calendar.readonly`) | calendar panel today; event CRUD/invites next | sensitive |
+| `drive` (v0.12+) | attach from Drive, upload oversized attachments, set share permissions on send | restricted |
+| `contacts.readonly` (v0.12+) | saved-contacts recipient autocomplete | sensitive |
+| `contacts.other.readonly` (v0.12+) | "Other contacts" (people you've emailed) autocomplete | sensitive |
+| `directory.readonly` (v0.12+) | Workspace directory autocomplete (no-op on consumer accounts) | sensitive |
 
-Adding `calendar.readonly` to a verified app later re-triggers scope review
-(sensitive tier — justification but no CASA). Existing connected accounts
-keep working; new consents show the extra checkbox. Users connected before
-v0.6 must **Disconnect → Connect Gmail** once to grant the new scopes (the
-app shows profile photos and calendar only after reconsent).
+### Re-consent (v0.12): every existing user reconnects once
+
+There is **no incremental consent** — the app requests one fixed block with
+`prompt=consent`. Existing refresh tokens keep their old scopes, so Drive /
+People calls 403 until the user does **Disconnect → Connect Gmail** once
+(disconnect revokes server-side first, so the next connect is a clean full
+grant). The app detects pre-v0.12 grants, shows a one-time notice, and offers
+a **"Reconnect to grant new access"** button in Settings → Account.
+
+Google's consent screen shows **per-scope checkboxes** — a user can grant
+Gmail but skip Drive. The app records exactly what was granted
+(`granted_scopes` per account) and gates each feature independently; a
+skipped scope just keeps that feature off, with the same Reconnect CTA.
+
+Verification posture: `gmail.modify` already put the app in
+restricted/CASA territory; `drive` is also restricted but adds no new
+*category* of burden. In Testing/Internal status none of this requires
+verification. The Data Access scope registry in the console should list the
+full block (informational while in Testing; binding at verification time).

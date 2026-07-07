@@ -11,6 +11,7 @@ import type {
   AccountsState,
   AiProviderId,
   CalendarEvent,
+  Capabilities,
   DraftEntry,
   DraftRequest,
   KnowledgeBase,
@@ -231,6 +232,17 @@ export class MockBackend implements Backend {
   }
   async hasGmailClient(): Promise<boolean> {
     return false;
+  }
+  /** Demo accounts hold every capability so the whole Drive/contacts flow is
+   *  demoable in the browser (the desktop's mock accounts report none). */
+  async getCapabilities(): Promise<Capabilities> {
+    return {
+      drive: true,
+      contacts: true,
+      calendarWrite: true,
+      settingsRead: true,
+      legacyGrant: false,
+    };
   }
   async startOauth(): Promise<AccountsState> {
     throw new Error(

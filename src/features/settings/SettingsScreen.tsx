@@ -10,6 +10,7 @@ import { Avatar } from "@/components/Avatar";
 import { SignatureEditor } from "./SignatureEditor";
 import type {
   AiProviderId,
+  Capabilities,
   Split,
   SplitField,
   SplitOp,
@@ -105,8 +106,21 @@ function ProfilePhoto({ email }: { email: string }) {
   );
 }
 
+/** Feature scopes this account's grant is missing (shown in the Reconnect
+ *  strip). legacyGrant (pre-v0.12 token) means all of them. */
+function missingGrants(caps: Capabilities | undefined): string[] {
+  if (!caps) return [];
+  if (caps.legacyGrant) return ["Drive", "Contacts", "Calendar"];
+  const missing: string[] = [];
+  if (!caps.drive) missing.push("Drive");
+  if (!caps.contacts) missing.push("Contacts");
+  if (!caps.calendarWrite) missing.push("Calendar");
+  return missing;
+}
+
 function AccountTab() {
   const accounts = useSettings((s) => s.accounts);
+  const capabilities = useSettings((s) => s.capabilities);
   const settings = useSettings((s) => s.settings);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -118,6 +132,26 @@ function AccountTab() {
   useEffect(() => {
     void backend.hasGmailClient().then(setClientStored);
   }, []);
+
+  // Disconnect (revokes server-side) then a fresh Connect — the one-time
+  // re-consent that unlocks scopes added after the account was connected.
+  const reconnect = async (email: string) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await backend.disconnect(email);
+      await backend.startOauth("", "");
+      await useSettings.getState().refreshAccounts();
+      await backend.syncNow();
+      await useMail.getState().refresh();
+      setMsg("Reconnected with the new access.");
+    } catch (e) {
+      setMsg(String(e));
+      await useSettings.getState().refreshAccounts();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const connect = async () => {
     setBusy(true);
@@ -221,6 +255,24 @@ function AccountTab() {
                     </button>
                   )}
                 </div>
+                {a.provider === "gmail" && missingGrants(capabilities[a.email]).length > 0 && (
+                  <div className="mt-2 flex items-center gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2">
+                    <span className="flex-1 text-[12px] text-ink-2">
+                      {capabilities[a.email]?.legacyGrant
+                        ? "This account was connected before the latest Google features."
+                        : `Not granted: ${missingGrants(capabilities[a.email]).join(", ")}.`}{" "}
+                      Reconnect once and check every box on Google's consent
+                      screen to use Drive attachments and contacts autocomplete.
+                    </span>
+                    <button
+                      className={btnCls}
+                      disabled={busy}
+                      onClick={() => void reconnect(a.email)}
+                    >
+                      {busy ? "Waiting for consent…" : "Reconnect to grant new access"}
+                    </button>
+                  </div>
+                )}
                 <div className="mt-2">
                   <SignatureEditor
                     value={sig}

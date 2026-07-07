@@ -139,15 +139,21 @@ async fn start_oauth(
     secrets::set(secrets::GMAIL_CLIENT_SECRET, &client_secret)?;
 
     let outcome = mail::oauth::run_flow(&state.http, &app, &client_id, &client_secret).await?;
-    // Non-fatal: warn if Gmail connected but Google skipped calendar.readonly, so
-    // the user fixes it now instead of hitting a scope 403 in the calendar panel.
-    let calendar_missing = outcome
-        .granted_scope
-        .as_deref()
-        .map(|scope| !scope.contains("calendar.readonly"))
-        .unwrap_or(false);
+    // Non-fatal: warn about any feature scope Google skipped (per-scope
+    // checkboxes on the consent screen), so the user fixes it now instead of
+    // hitting a 403 later. Everything still gates on get_capabilities.
+    let missing_features = missing_feature_names(outcome.granted_scope.as_deref());
     let email = GmailSession::profile_email(&state.http, &outcome.access_token).await?;
     secrets::set(&secrets::gmail_refresh_entry(&email), &outcome.refresh_token)?;
+
+    // Persist exactly what was granted — feature gating reads this, and its
+    // absence marks a pre-v0.12 grant that needs one reconnect.
+    if let Some(scope) = &outcome.granted_scope {
+        let conn = state.db.lock().unwrap();
+        let _ = store::set_json(&conn, &format!("granted_scopes:{email}"), scope);
+        // A fresh grant never needs the "reconnect for new features" notice.
+        let _ = store::set_json(&conn, &format!("scope_notice_shown:{email}"), &true);
+    }
 
     // Grab the display name + photo while we hold a fresh access token.
     if let Some(prof) = fetch_google_profile(&state.http, &outcome.access_token).await {
@@ -180,14 +186,67 @@ async fn start_oauth(
     let session = GmailSession::new_connected(email.clone(), outcome.access_token, outcome.expires_in)
         .ok_or("keychain readback failed")?;
     state.gmail.lock().await.insert(email, session);
-    if calendar_missing {
+    if !missing_features.is_empty() {
         let _ = app.emit(
             "app:notice",
-            "Connected, but Calendar access wasn't granted — run Connect Gmail again and check the Calendar box.".to_string(),
+            format!(
+                "Connected, but {} access wasn't granted — run Connect Gmail again and check every box.",
+                missing_features.join(" + ")
+            ),
         );
     }
     sync_in_background(app);
     Ok(accounts)
+}
+
+/// Does a space-separated grant string contain this exact scope URL?
+fn scope_granted(granted: &str, scope: &str) -> bool {
+    granted.split_whitespace().any(|s| s == scope)
+}
+
+/// Human names of the feature scopes missing from a grant (None = Google
+/// didn't report the grant; assume complete rather than nag falsely).
+fn missing_feature_names(granted: Option<&str>) -> Vec<&'static str> {
+    let Some(g) = granted else { return vec![] };
+    let mut missing = vec![];
+    if !scope_granted(g, "https://www.googleapis.com/auth/calendar") {
+        missing.push("Calendar");
+    }
+    if !scope_granted(g, "https://www.googleapis.com/auth/drive") {
+        missing.push("Drive");
+    }
+    if !scope_granted(g, "https://www.googleapis.com/auth/contacts.readonly")
+        && !scope_granted(g, "https://www.googleapis.com/auth/contacts.other.readonly")
+    {
+        missing.push("Contacts");
+    }
+    missing
+}
+
+/// What the account's persisted OAuth grant actually covers. Mock accounts
+/// get nothing (the browser demo's MockBackend answers for itself); a gmail
+/// account with no recorded grant predates v0.12 → legacy_grant.
+#[tauri::command]
+fn get_capabilities(state: State<'_, AppState>, email: String) -> Capabilities {
+    let conn = state.db.lock().unwrap();
+    let is_gmail = store::get_accounts(&conn)
+        .accounts
+        .iter()
+        .any(|a| a.email == email && a.provider == "gmail");
+    if !is_gmail {
+        return Capabilities::default();
+    }
+    match store::get_json::<String>(&conn, &format!("granted_scopes:{email}")) {
+        None => Capabilities { legacy_grant: true, ..Default::default() },
+        Some(g) => Capabilities {
+            drive: scope_granted(&g, "https://www.googleapis.com/auth/drive"),
+            contacts: scope_granted(&g, "https://www.googleapis.com/auth/contacts.readonly")
+                || scope_granted(&g, "https://www.googleapis.com/auth/contacts.other.readonly"),
+            calendar_write: scope_granted(&g, "https://www.googleapis.com/auth/calendar"),
+            settings_read: scope_granted(&g, "https://www.googleapis.com/auth/gmail.settings.basic"),
+            legacy_grant: false,
+        },
+    }
 }
 
 #[tauri::command]
@@ -215,6 +274,11 @@ async fn disconnect_account(
     let accounts = {
         let conn = state.db.lock().unwrap();
         store::clear_account_mail(&conn, &email)?;
+        // Drop the recorded grant: the account is gone (or about to reconnect
+        // with a fresh consent), so stale capabilities must not linger.
+        for key in ["granted_scopes", "scope_notice_shown"] {
+            conn.execute("DELETE FROM kv WHERE key = ?1", [format!("{key}:{email}")]).ok();
+        }
         let mut accounts = store::get_accounts(&conn);
         accounts.accounts.retain(|a| a.email != email);
         if accounts.accounts.is_empty() {
@@ -1904,6 +1968,40 @@ pub fn run() {
                 }
             }
 
+            // One-time notice for accounts whose grant predates the v0.12
+            // scope expansion (no recorded granted_scopes): they need a single
+            // Disconnect → Connect to unlock Drive/Contacts/Calendar-write.
+            // Delayed so the webview's notice listener is up.
+            let mut legacy_grant_accounts: Vec<String> = vec![];
+            for a in &accounts.accounts {
+                if a.provider != "gmail" {
+                    continue;
+                }
+                let has_grant =
+                    store::get_json::<String>(&conn, &format!("granted_scopes:{}", a.email))
+                        .is_some();
+                let shown =
+                    store::get_json::<bool>(&conn, &format!("scope_notice_shown:{}", a.email))
+                        == Some(true);
+                if !has_grant && !shown {
+                    let _ = store::set_json(&conn, &format!("scope_notice_shown:{}", a.email), &true);
+                    legacy_grant_accounts.push(a.email.clone());
+                }
+            }
+            if !legacy_grant_accounts.is_empty() {
+                let notice_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    let _ = notice_handle.emit(
+                        "app:notice",
+                        format!(
+                            "New in this update: Drive attachments + contacts autocomplete. Reconnect {} in Settings → Account to grant access.",
+                            legacy_grant_accounts.join(", ")
+                        ),
+                    );
+                });
+            }
+
             // allow a previously-configured celebration folder
             let settings = store::get_settings(&conn);
             if let Some(dir) = &settings.celebration_dir {
@@ -2121,6 +2219,7 @@ pub fn run() {
             get_accounts,
             switch_account,
             reorder_accounts,
+            get_capabilities,
             has_gmail_client,
             start_oauth,
             disconnect_account,

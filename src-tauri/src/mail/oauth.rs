@@ -10,11 +10,15 @@ use tokio::net::TcpListener;
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-// gmail.modify: read + send + archive/label, but NOT permanent delete or
-// account-level settings — the least privilege that covers the feature set.
-// openid/email/profile give the account photo; calendar.readonly feeds the
-// calendar side panel. Requested together so users consent exactly once.
-const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify openid email profile https://www.googleapis.com/auth/calendar.readonly";
+// One fixed scope block, requested together so users consent exactly once
+// (there is no incremental consent in the app — new scopes need a
+// Disconnect → Connect). gmail.modify: read + send + archive/label, but NOT
+// permanent delete. gmail.settings.basic: read send-as aliases. openid/email/
+// profile: account photo. calendar (full, v0.12+): event CRUD groundwork.
+// drive: attach-from-Drive + oversized-attachment share links. contacts.* +
+// directory: recipient autocomplete. Partial grants are tolerated — every
+// feature gates on the persisted granted_scopes (see get_capabilities).
+const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic openid email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/contacts.other.readonly https://www.googleapis.com/auth/directory.readonly";
 
 #[derive(Deserialize)]
 struct TokenResponse {
@@ -141,7 +145,7 @@ pub async fn run_flow(
         .map_err(|_| "token exchange failed (network)".to_string())?;
     if !resp.status().is_success() {
         return Err(format!(
-            "token exchange failed ({}) — check the client ID/secret and that {SCOPE} is enabled",
+            "token exchange failed ({}) — check the client ID/secret and that the requested scopes are registered for the app",
             resp.status()
         ));
     }
