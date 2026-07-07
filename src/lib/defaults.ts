@@ -156,6 +156,8 @@ export function defaultSettings(): Settings {
     sidebarOpen: false,
     showShortcutBar: true,
     undoSendSeconds: 10,
+    driveAutoUpload: "ask",
+    driveShareMode: "recipients",
   };
 }
 

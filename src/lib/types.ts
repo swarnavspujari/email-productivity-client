@@ -114,6 +114,10 @@ export interface Settings {
   /** Undo Send window in seconds: 0 = off (send immediately), else the delay
    *  before the message actually leaves. Default 10. */
   undoSendSeconds: number;
+  /** Oversized attachments → Drive links: confirm per drop, or just do it. */
+  driveAutoUpload: "ask" | "always";
+  /** Remembered share-on-send choice for linked Drive files. */
+  driveShareMode: DriveShareMode;
 }
 
 /** Which Google features this account's OAuth grant actually covers. Users

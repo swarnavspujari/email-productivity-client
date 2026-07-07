@@ -106,6 +106,13 @@ pub struct Settings {
     /// Undo Send window in seconds (0 = off / send immediately). Default 10.
     #[serde(default = "default_undo_send")]
     pub undo_send_seconds: i64,
+    /// Oversized attachments → Drive links: "ask" (confirm per drop) or
+    /// "always" (upload without asking).
+    #[serde(default = "default_drive_auto_upload")]
+    pub drive_auto_upload: String,
+    /// Remembered share-on-send choice: "recipients" | "anyone" | "none".
+    #[serde(default = "default_drive_share_mode")]
+    pub drive_share_mode: String,
 }
 
 fn default_theme() -> String {
@@ -118,6 +125,14 @@ fn default_true() -> bool {
 
 fn default_undo_send() -> i64 {
     10
+}
+
+fn default_drive_auto_upload() -> String {
+    "ask".into()
+}
+
+fn default_drive_share_mode() -> String {
+    "recipients".into()
 }
 
 /// Which Google features this account's OAuth grant actually covers.

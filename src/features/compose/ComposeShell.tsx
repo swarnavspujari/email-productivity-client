@@ -10,6 +10,7 @@
 //     the ••• in a sandboxed, editable QuoteFrame.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
+import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { ComposeEditor } from "./ComposeEditor";
 import { RecipientFields } from "./RecipientFields";
@@ -17,11 +18,129 @@ import { AttachmentChips } from "./AttachmentChips";
 import { ComposeAiBar } from "./ComposeAiBar";
 import { ComposeActionBar } from "./ComposeActionBar";
 import { QuoteFrame } from "./QuoteFrame";
-import { useComposeController } from "./useComposeController";
+import {
+  cancelDriveUpload,
+  chooseShareMode,
+  confirmDriveUpload,
+  useComposeController,
+} from "./useComposeController";
+
+const modalBtn =
+  "rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-on-accent hover:bg-accent-strong";
+const modalGhost =
+  "rounded-md border border-line-strong px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-hover";
+
+/** "Too big to attach — upload to Google Drive and insert a link?" */
+function DriveUploadPrompt({ names }: { names: string[] }) {
+  const [remember, setRemember] = useState(false);
+  return (
+    <div
+      className="zb-fade-in fixed inset-0 z-40 flex items-center justify-center bg-black/50"
+      onClick={cancelDriveUpload}
+    >
+      <div
+        className="zb-pop-in w-[460px] max-w-[90vw] rounded-xl border border-line-strong bg-overlay p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-[13.5px] font-medium text-ink">
+          Too big to attach — send {names.length === 1 ? "it" : "them"} with
+          Google Drive?
+        </div>
+        <div className="mt-1.5 max-h-24 overflow-y-auto text-[12.5px] text-ink-2">
+          {names.map((n) => (
+            <div key={n} className="truncate">
+              ▲ {n}
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[12px] text-ink-3">
+          Files over the 25 MB email limit upload to your "Fission Mail
+          Attachments" Drive folder and go out as a link, like Gmail. You'll
+          choose who the links are shared with when you send.
+        </p>
+        <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-ink-2">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+          />
+          Always upload oversized attachments without asking
+        </label>
+        <div className="mt-3 flex justify-end gap-2">
+          <button className={modalGhost} onClick={cancelDriveUpload}>
+            Cancel
+          </button>
+          <button className={modalBtn} onClick={() => confirmDriveUpload(remember)}>
+            Upload &amp; link
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Share-on-send: who can open the linked Drive files? */
+function SharePrompt({ count }: { count: number }) {
+  const remembered = useSettings((s) => s.settings.driveShareMode);
+  const options = [
+    {
+      mode: "recipients" as const,
+      label: "Share with recipients",
+      detail: "Everyone on this email can view",
+    },
+    {
+      mode: "anyone" as const,
+      label: "Anyone with the link",
+      detail: "Anyone who gets the link can view",
+    },
+    {
+      mode: "none" as const,
+      label: "Don't change access",
+      detail: "Recipients without access will have to request it",
+    },
+  ];
+  return (
+    <div
+      className="zb-fade-in fixed inset-0 z-40 flex items-center justify-center bg-black/50"
+      onClick={() => chooseShareMode("cancel")}
+    >
+      <div
+        className="zb-pop-in w-[440px] max-w-[90vw] rounded-xl border border-line-strong bg-overlay p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-[13.5px] font-medium text-ink">
+          {count === 1 ? "1 Drive file is" : `${count} Drive files are`} linked
+          in this email
+        </div>
+        <div className="mt-2 space-y-1">
+          {options.map((o) => (
+            <button
+              key={o.mode}
+              onClick={() => chooseShareMode(o.mode)}
+              className={`block w-full rounded-md border px-3 py-2 text-left hover:bg-hover ${
+                o.mode === remembered ? "border-accent" : "border-line"
+              }`}
+            >
+              <div className="text-[13px] text-ink">{o.label}</div>
+              <div className="text-[11.5px] text-ink-3">{o.detail}</div>
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 flex justify-end">
+          <button className={modalGhost} onClick={() => chooseShareMode("cancel")}>
+            Cancel send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function ComposeShell({ variant }: { variant: "modal" | "dock" }) {
   const compose = useUi((s) => s.compose)!;
   const aiBarOpen = useUi((s) => s.aiBarOpen);
+  const drivePrompt = useUi((s) => s.drivePrompt);
+  const sharePrompt = useUi((s) => s.sharePrompt);
   const { sending, error, fileRef, addFiles } = useComposeController();
   const [editor, setEditor] = useState<Editor | null>(null);
   const [showQuote, setShowQuote] = useState(false);
@@ -121,6 +240,9 @@ export function ComposeShell({ variant }: { variant: "modal" | "dock" }) {
         fileRef={fileRef}
         addFiles={addFiles}
       />
+
+      {drivePrompt && <DriveUploadPrompt names={drivePrompt.names} />}
+      {sharePrompt && <SharePrompt count={sharePrompt.count} />}
     </div>
   );
 }

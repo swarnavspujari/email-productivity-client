@@ -9,9 +9,15 @@ import { backend } from "@/lib/ipc";
 import { pushTriageUndo } from "@/lib/commands";
 import { pushUndo } from "@/lib/undo";
 import { useMail } from "@/stores/mail";
-import { useSettings } from "@/stores/settings";
-import { composeHasContent, outgoingFromCompose, useUi } from "@/stores/ui";
-import type { MailAttachment } from "@/lib/types";
+import { activeCapabilities, useSettings } from "@/stores/settings";
+import {
+  composeHasContent,
+  driveChipHtml,
+  driveChipsInHtml,
+  outgoingFromCompose,
+  useUi,
+} from "@/stores/ui";
+import type { DriveShareMode, MailAttachment } from "@/lib/types";
 
 const MAX_ATTACH_TOTAL = 25_000_000; // Gmail's raw-message ceiling
 
@@ -35,6 +41,88 @@ function readFileB64(file: File): Promise<MailAttachment> {
       });
     };
     r.readAsDataURL(file);
+  });
+}
+
+// ---- oversized attachments → Drive links -----------------------------------
+// The File objects behind the "upload to Drive?" confirm and the resolver
+// behind the share-on-send dialog live here (module scope): the ui store only
+// carries what the modals render. One compose is ever open, so one slot each.
+
+let oversizedQueue: File[] = [];
+let shareResolver: ((mode: DriveShareMode | "cancel") => void) | null = null;
+let driveUploadSeq = 1;
+
+/** Upload one oversized file to Drive with a live pending chip; on success
+ *  insert the link chip at the caret and record it for share-on-send. */
+function startDriveUpload(file: File) {
+  const id = driveUploadSeq++;
+  useUi.setState((s) => ({
+    driveUploads: [
+      ...s.driveUploads,
+      { id, name: file.name, sent: 0, total: file.size || 1 },
+    ],
+  }));
+  backend
+    .driveUploadFile(file, (sent, total) => {
+      useUi.setState((s) => ({
+        driveUploads: s.driveUploads.map((u) =>
+          u.id === id ? { ...u, sent, total } : u
+        ),
+      }));
+    })
+    .then((f) => {
+      useUi.setState((s) => ({
+        driveUploads: s.driveUploads.filter((u) => u.id !== id),
+      }));
+      // The composer may have closed mid-upload — then there's nowhere to
+      // insert and the file just sits in the Drive folder (accepted orphan).
+      const c = useUi.getState().compose;
+      if (!c) return;
+      const ref = { fileId: f.id, name: f.name, url: f.webViewLink, size: f.size };
+      useUi.setState((s) => ({
+        compose: s.compose
+          ? { ...s.compose, driveLinks: [...s.compose.driveLinks, ref] }
+          : null,
+      }));
+      window.dispatchEvent(
+        new CustomEvent("fission:insert-html", { detail: { html: driveChipHtml(ref) } })
+      );
+    })
+    .catch((e) => {
+      useUi.setState((s) => ({
+        driveUploads: s.driveUploads.filter((u) => u.id !== id),
+      }));
+      useUi.getState().showToast(`Drive upload failed: ${String(e)}`);
+    });
+}
+
+/** Confirm-modal actions (DriveUploadPrompt in ComposeShell). */
+export function confirmDriveUpload(remember: boolean) {
+  if (remember) void useSettings.getState().save({ driveAutoUpload: "always" });
+  const files = oversizedQueue;
+  oversizedQueue = [];
+  useUi.setState({ drivePrompt: null });
+  for (const f of files) startDriveUpload(f);
+}
+
+export function cancelDriveUpload() {
+  oversizedQueue = [];
+  useUi.setState({ drivePrompt: null });
+}
+
+/** Share-dialog actions (SharePrompt in ComposeShell). */
+export function chooseShareMode(mode: DriveShareMode | "cancel") {
+  useUi.setState({ sharePrompt: null });
+  shareResolver?.(mode);
+  shareResolver = null;
+}
+
+/** Ask the user how to share the linked files; resolves with the choice. */
+function promptShareMode(count: number): Promise<DriveShareMode | "cancel"> {
+  return new Promise((resolve) => {
+    shareResolver = resolve;
+    useUi.setState({ sharePrompt: { count } });
   });
 }
 
@@ -87,10 +175,47 @@ export function useComposeController() {
       // else the fuse the message waits out before it actually sends.
       const undoMs =
         Math.max(0, useSettings.getState().settings.undoSendSeconds ?? 10) * 1000;
+      if (useUi.getState().driveUploads.length > 0) {
+        setError("A Drive upload is still in progress — it becomes a link when it finishes.");
+        return;
+      }
       setSending(true);
       setError(null);
       try {
         const outgoing = outgoingFromCompose(c);
+
+        // Share-on-send: chips still present in the body (the user may have
+        // deleted some) get read access for the recipients before the mail
+        // moves. Per-file failures warn but never block the send — Gmail
+        // behaves the same way.
+        const chipsInBody = driveChipsInHtml(outgoing.bodyHtml ?? "");
+        const toShare = c.driveLinks.filter((l) => chipsInBody.has(l.fileId));
+        if (toShare.length > 0) {
+          const mode = await promptShareMode(toShare.length);
+          if (mode === "cancel") {
+            setSending(false);
+            return;
+          }
+          if (mode !== useSettings.getState().settings.driveShareMode) {
+            void useSettings.getState().save({ driveShareMode: mode });
+          }
+          if (mode !== "none") {
+            const recipients = [...outgoing.to, ...outgoing.cc, ...outgoing.bcc];
+            const failed: string[] = [];
+            for (const link of toShare) {
+              try {
+                failed.push(...(await backend.driveShare(link.fileId, mode, recipients)));
+              } catch (e) {
+                useUi.getState().showToast(`Couldn't share "${link.name}": ${String(e)}`);
+              }
+            }
+            if (failed.length > 0) {
+              useUi
+                .getState()
+                .showToast(`Couldn't share with: ${[...new Set(failed)].join(", ")}`);
+            }
+          }
+        }
 
         // "Send & mark done": archive the thread + register its own triage undo.
         // Returns whether it ran, so the notification can say "& marked done".
@@ -168,12 +293,15 @@ export function useComposeController() {
     );
     let total = existing;
     const added: MailAttachment[] = [];
+    const oversized: File[] = [];
     for (const f of Array.from(files)) {
-      total += f.size;
-      if (total > MAX_ATTACH_TOTAL) {
-        setError("Attachments exceed the 25 MB limit.");
-        break;
+      // Files that don't fit under Gmail's inline ceiling go to Drive and
+      // send as a link chip instead of erroring (the Gmail behavior).
+      if (total + f.size > MAX_ATTACH_TOTAL) {
+        oversized.push(f);
+        continue;
       }
+      total += f.size;
       added.push(await readFileB64(f));
     }
     if (added.length) {
@@ -182,6 +310,20 @@ export function useComposeController() {
           ? { ...s.compose, attachments: [...s.compose.attachments, ...added] }
           : null,
       }));
+    }
+    if (oversized.length) {
+      if (!activeCapabilities().drive) {
+        setError(
+          "Attachments exceed the 25 MB limit. Reconnect Gmail with Drive access (Settings → Account) to send big files as Drive links."
+        );
+        return;
+      }
+      if (useSettings.getState().settings.driveAutoUpload === "always") {
+        for (const f of oversized) startDriveUpload(f);
+      } else {
+        oversizedQueue = oversized;
+        useUi.setState({ drivePrompt: { names: oversized.map((f) => f.name) } });
+      }
     }
   };
 

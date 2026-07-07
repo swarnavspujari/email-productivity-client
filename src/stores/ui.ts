@@ -248,6 +248,15 @@ interface UiState {
   /** Keyboard-shortcuts reference panel in the right-hand dock (Ctrl+K →
    *  "Keyboard Shortcuts"). Session state, deliberately not persisted. */
   shortcutsOpen: boolean;
+  /** In-flight oversized-attachment uploads to Drive — the pending chips in
+   *  the composer's attachment row. Cleared when compose closes. */
+  driveUploads: DriveUploadUi[];
+  /** "Too big to attach — upload to Drive?" confirm (file names shown;
+   *  the File objects wait in useComposeController). */
+  drivePrompt: { names: string[] } | null;
+  /** Share-on-send dialog (linked-file count; resolver waits in
+   *  useComposeController). */
+  sharePrompt: { count: number } | null;
 
   setScreen: (s: Screen) => void;
   setFocusRegion: (r: FocusRegion) => void;
@@ -270,6 +279,14 @@ interface UiState {
   /** Called after any archive-ish action: fires the celebration if the
    *  active split just hit zero. */
   checkInboxZero: () => Promise<void>;
+}
+
+/** One oversized attachment mid-upload to Drive (a pending chip). */
+export interface DriveUploadUi {
+  id: number;
+  name: string;
+  sent: number;
+  total: number;
 }
 
 /** A send waiting out its Undo Send window (see UndoSendBar). */
@@ -299,6 +316,9 @@ export const useUi = create<UiState>((set, get) => ({
   aiBarOpen: false,
   askAiOpen: false,
   shortcutsOpen: false,
+  driveUploads: [],
+  drivePrompt: null,
+  sharePrompt: null,
 
   setScreen: (s) =>
     set({
@@ -314,7 +334,16 @@ export const useUi = create<UiState>((set, get) => ({
   closePicker: () => set({ picker: "none" }),
   startCompose: (c) =>
     set({ compose: c, screen: "mail", aiBarOpen: false, askAiOpen: false }),
-  closeCompose: () => set({ compose: null, aiBarOpen: false }),
+  closeCompose: () =>
+    set({
+      compose: null,
+      aiBarOpen: false,
+      // In-flight uploads have nowhere to land once the composer is gone —
+      // drop the pending chips (the Drive-side session just expires).
+      driveUploads: [],
+      drivePrompt: null,
+      sharePrompt: null,
+    }),
   setSettingsTab: (t) => set({ settingsTab: t }),
   setSuggestions: (s) => set({ suggestions: s, suggestionIndex: null }),
   cycleSuggestion: () =>

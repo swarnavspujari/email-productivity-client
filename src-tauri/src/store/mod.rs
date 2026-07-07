@@ -366,6 +366,8 @@ pub fn default_settings() -> Settings {
         sidebar_open: false,
         show_shortcut_bar: true,
         undo_send_seconds: 10,
+        drive_auto_upload: "ask".into(),
+        drive_share_mode: "recipients".into(),
     }
 }
 
