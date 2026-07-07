@@ -183,6 +183,10 @@ interface UiState {
   compose: ComposeState | null;
   celebration: ZeroEvent | null;
   toast: string | null;
+  /** A message queued in the Undo Send window: drives the bottom-left bar with
+   *  its countdown, Z-to-undo, and Send-now (accelerate). Null when nothing is
+   *  pending or the window has elapsed. */
+  pendingSend: PendingSend | null;
   settingsTab: string;
   /** Instant Reply suggestions for the open thread. */
   suggestions: string[];
@@ -207,9 +211,21 @@ interface UiState {
   cycleSuggestion: () => void;
   setAiBarOpen: (open: boolean) => void;
   setAskAiOpen: (open: boolean) => void;
+  setPendingSend: (p: PendingSend | null) => void;
+  clearPendingSend: () => void;
   /** Called after any archive-ish action: fires the celebration if the
    *  active split just hit zero. */
   checkInboxZero: () => Promise<void>;
+}
+
+/** A send waiting out its Undo Send window (see UndoSendBar). */
+export interface PendingSend {
+  /** The outbox row to cancel (Z) or flush now (Ctrl/Cmd+Shift+Z). */
+  outboxId: number;
+  /** Epoch ms when the message actually leaves; drives the countdown. */
+  expiresAt: number;
+  /** Bar label, e.g. "Sent" or "Sent & marked done". */
+  label: string;
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -222,6 +238,7 @@ export const useUi = create<UiState>((set, get) => ({
   compose: null,
   celebration: null,
   toast: null,
+  pendingSend: null,
   settingsTab: "account",
   suggestions: [],
   suggestionIndex: null,
@@ -256,6 +273,8 @@ export const useUi = create<UiState>((set, get) => ({
     }),
   setAiBarOpen: (open) => set({ aiBarOpen: open }),
   setAskAiOpen: (open) => set({ askAiOpen: open }),
+  setPendingSend: (p) => set({ pendingSend: p }),
+  clearPendingSend: () => set({ pendingSend: null }),
 
   showToast: (msg) => {
     set({ toast: msg });

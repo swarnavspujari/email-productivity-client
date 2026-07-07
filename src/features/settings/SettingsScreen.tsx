@@ -875,6 +875,7 @@ function AppearanceTab() {
   const theme = useSettings((s) => s.settings.theme);
   const notifications = useSettings((s) => s.settings.notifications);
   const onboarded = useSettings((s) => s.settings.onboarded);
+  const undoSendSeconds = useSettings((s) => s.settings.undoSendSeconds);
   return (
     <>
       <Section
@@ -917,6 +918,25 @@ function AppearanceTab() {
           />
           <span className="text-[13px] text-ink">Notify me about new mail</span>
         </label>
+      </Section>
+
+      <Section
+        title="Undo send"
+        hint="Hold outgoing mail briefly so you can pull it back before it leaves. Press Z to undo, or Ctrl+Shift+Z to send instantly. Off sends the moment you hit Send."
+      >
+        <select
+          value={undoSendSeconds}
+          onChange={(e) =>
+            void useSettings
+              .getState()
+              .save({ undoSendSeconds: Number(e.target.value) })
+          }
+          className="cursor-pointer rounded-md border border-line-strong bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
+        >
+          <option value={0}>Off — send immediately</option>
+          <option value={10}>10 seconds</option>
+          <option value={30}>30 seconds</option>
+        </select>
       </Section>
 
       <Section

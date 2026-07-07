@@ -78,6 +78,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // focus, so typing "j"/"k" is never hijacked.
   "compose.prevEmail": "k",
   "compose.nextEmail": "j",
+  // Accelerate a pending send (skip the Undo Send window, send instantly).
+  "send.accelerate": "mod+shift+z",
   "theme.toggle": "",
   "calendar.toggle": "",
   "calendar.open": "g c",
@@ -145,6 +147,7 @@ export function defaultSettings(): Settings {
     calendarOpen: false,
     sidebarOpen: false,
     showShortcutBar: true,
+    undoSendSeconds: 10,
   };
 }
 

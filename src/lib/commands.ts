@@ -742,6 +742,33 @@ export function allCommands(): Command[] {
       when: () => ui().compose?.mode === "new",
       run: () => composeGoToEmail(1),
     },
+    {
+      // Accelerate a message waiting out its Undo Send window: flush it now.
+      id: "send.accelerate",
+      title: "Send Now (skip Undo Send)",
+      group: "Compose",
+      when: () => ui().pendingSend !== null,
+      run: async () => {
+        const ps = ui().pendingSend;
+        if (!ps) return;
+        try {
+          await backend.sendOutboxNow(ps.outboxId);
+          ui().clearPendingSend();
+          ui().showToast("Sent");
+        } catch (e) {
+          const msg = String((e as { message?: string })?.message ?? e);
+          // "already sent" = the row was gone, so it really left — safe to
+          // dismiss. Any other error is a transient delivery failure: keep the
+          // bar (and Z) alive, since the message is still queued at its fuse.
+          if (/already sent/i.test(msg)) {
+            ui().clearPendingSend();
+            ui().showToast("Already sent");
+          } else {
+            ui().showToast("Couldn't send now — still queued");
+          }
+        }
+      },
+    },
     // Reveal + focus a reply-dock field. These fire even while typing (mod+
     // combos pass the editable guard); Tab then walks To→Cc→Bcc→Subject→body.
     {

@@ -349,6 +349,23 @@ export class MockBackend implements Backend {
     return entry.mail;
   }
 
+  async sendMailNow(mail: OutgoingMail): Promise<void> {
+    // Undo Send off: deliver immediately, never touching the outbox.
+    this.deliverNow(mail);
+    this.persist();
+    this.notify();
+  }
+
+  async sendOutboxNow(outboxId: number): Promise<void> {
+    // Accelerate: flush a still-pending send now instead of waiting the window.
+    const entry = this.state.outbox.find((o) => o.id === outboxId);
+    if (!entry) throw new Error("already sent");
+    this.state.outbox = this.state.outbox.filter((o) => o.id !== outboxId);
+    this.deliverNow(entry.mail);
+    this.persist();
+    this.notify();
+  }
+
   private deliverNow(mail: OutgoingMail) {
     const nowMs = Date.now();
     if (mail.threadId) {

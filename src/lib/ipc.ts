@@ -81,6 +81,10 @@ export interface Backend {
   queueMail(mail: OutgoingMail, delayMs: number): Promise<number>;
   /** Undo Send: reclaim the draft before the outbox flushes. Throws if sent. */
   cancelOutbox(outboxId: number): Promise<OutgoingMail>;
+  /** Send immediately, bypassing the outbox — used when Undo Send is off. */
+  sendMailNow(mail: OutgoingMail): Promise<void>;
+  /** Accelerate a pending send: flush it now instead of waiting the window. */
+  sendOutboxNow(outboxId: number): Promise<void>;
   search(query: string): Promise<SearchResult[]>;
   /** Full-history search: local matches plus a live Gmail search for mail
    *  older than the local cache. Slower than search(); call it debounced. */
@@ -243,6 +247,12 @@ class TauriBackend implements Backend {
   }
   cancelOutbox(outboxId: number) {
     return invoke<OutgoingMail>("cancel_outbox", { outboxId });
+  }
+  sendMailNow(mail: OutgoingMail) {
+    return invoke<void>("send_mail_now", { mail });
+  }
+  sendOutboxNow(outboxId: number) {
+    return invoke<void>("send_outbox_now", { outboxId });
   }
   search(query: string) {
     return invoke<SearchResult[]>("search_threads", { query });

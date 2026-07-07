@@ -6,7 +6,7 @@ import { useUi } from "@/stores/ui";
 export function UndoToast({ message }: { message: string }) {
   const undoable = hasUndo();
   return (
-    <div className="zb-pop-in absolute bottom-5 left-5 z-25 flex min-w-[260px] max-w-[380px] items-stretch gap-3 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+    <div className="zb-pop-in flex min-w-[260px] max-w-[380px] items-stretch gap-3 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
       <span className="w-[3px] shrink-0 bg-accent" />
       <span className="flex-1 py-2.5 text-[13px] text-ink">{message}</span>
       {undoable && (

@@ -80,6 +80,13 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
     // v0.5 migrations: inline-image cids + cached attachment bytes, drafts.
     let _ = conn.execute("ALTER TABLE attachments ADD COLUMN content_id TEXT", []);
     let _ = conn.execute("ALTER TABLE attachments ADD COLUMN data BLOB", []);
+    // v0.13: outbox "claimed" flag — a row is claimed before its (async) network
+    // send so the 3s processor and Send-now (accelerate) can never both deliver
+    // it, and Undo can't cancel a send already in flight.
+    let _ = conn.execute(
+        "ALTER TABLE outbox ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS drafts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +102,8 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
             account_id TEXT NOT NULL,
             payload TEXT NOT NULL,
             send_at INTEGER NOT NULL,
-            attempts INTEGER NOT NULL DEFAULT 0
+            attempts INTEGER NOT NULL DEFAULT 0,
+            claimed INTEGER NOT NULL DEFAULT 0
         );",
     )
     .map_err(|e| e.to_string())?;
@@ -254,6 +262,12 @@ pub fn default_settings() -> Settings {
         ("compose.expandCc", "mod+shift+c"),
         ("compose.expandBcc", "mod+shift+b"),
         ("compose.expandSubject", "mod+shift+s"),
+        // New-message composer nav (v0.12) — parity with defaults.ts so the
+        // desktop app binds K/J, not just the header chevrons.
+        ("compose.prevEmail", "k"),
+        ("compose.nextEmail", "j"),
+        // Accelerate a pending send (skip the Undo Send window).
+        ("send.accelerate", "mod+shift+z"),
         ("theme.toggle", ""),
         ("calendar.toggle", ""),
         ("calendar.open", "g c"),
@@ -343,6 +357,7 @@ pub fn default_settings() -> Settings {
         calendar_open: false,
         sidebar_open: false,
         show_shortcut_bar: true,
+        undo_send_seconds: 10,
     }
 }
 
@@ -926,19 +941,57 @@ pub fn outbox_add(
     Ok(conn.last_insert_rowid())
 }
 
-/// Remove a pending send and hand the draft back (None = already sent).
+/// Remove a pending send and hand the draft back (None = already sent). Only an
+/// UNCLAIMED row can be pulled back — a claimed row is mid-flight, so Undo
+/// returns None ("already sent") rather than silently failing to stop it. The
+/// caller holds the DB lock, so this SELECT+DELETE is atomic w.r.t. the outbox
+/// processor and accelerate.
 pub fn outbox_cancel(conn: &Connection, id: i64) -> Option<OutgoingMail> {
-    let payload: Option<String> = conn
-        .query_row("SELECT payload FROM outbox WHERE id = ?1", params![id], |r| r.get(0))
-        .ok();
-    let mail = payload.and_then(|p| serde_json::from_str(&p).ok())?;
+    let payload: String = conn
+        .query_row(
+            "SELECT payload FROM outbox WHERE id = ?1 AND claimed = 0",
+            params![id],
+            |r| r.get(0),
+        )
+        .ok()?;
     conn.execute("DELETE FROM outbox WHERE id = ?1", params![id]).ok()?;
-    Some(mail)
+    serde_json::from_str(&payload).ok()
+}
+
+/// Read a pending send (account + draft) WITHOUT removing it — the caller
+/// (send_outbox_now) deletes it only after delivery succeeds, so a failed flush
+/// leaves it queued for the processor to retry.
+pub fn outbox_get(conn: &Connection, id: i64) -> Option<(String, OutgoingMail)> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT account_id, payload FROM outbox WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok();
+    row.and_then(|(acc, p)| serde_json::from_str(&p).ok().map(|m| (acc, m)))
+}
+
+/// Atomically mark a pending row as in-flight (claimed 0→1). Returns true only
+/// for the single caller that wins the flip, so exactly one of {processor,
+/// accelerate} ever delivers a given row — the DB lock serializes the UPDATE.
+pub fn outbox_claim(conn: &Connection, id: i64) -> bool {
+    conn.execute(
+        "UPDATE outbox SET claimed = 1 WHERE id = ?1 AND claimed = 0",
+        params![id],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// Release a claim so a failed delivery can be retried (or cancelled).
+pub fn outbox_unclaim(conn: &Connection, id: i64) {
+    let _ = conn.execute("UPDATE outbox SET claimed = 0 WHERE id = ?1", params![id]);
 }
 
 pub fn outbox_due(conn: &Connection, now_ms: i64) -> Vec<(i64, String, OutgoingMail)> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, account_id, payload FROM outbox WHERE send_at <= ?1 AND attempts < 5",
+        "SELECT id, account_id, payload FROM outbox WHERE send_at <= ?1 AND attempts < 5 AND claimed = 0",
     ) else {
         return vec![];
     };

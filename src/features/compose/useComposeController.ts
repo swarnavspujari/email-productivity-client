@@ -9,10 +9,10 @@ import { backend } from "@/lib/ipc";
 import { pushTriageUndo } from "@/lib/commands";
 import { pushUndo } from "@/lib/undo";
 import { useMail } from "@/stores/mail";
+import { useSettings } from "@/stores/settings";
 import { composeHasContent, outgoingFromCompose, useUi } from "@/stores/ui";
 import type { MailAttachment } from "@/lib/types";
 
-const UNDO_SEND_MS = 10_000;
 const MAX_ATTACH_TOTAL = 25_000_000; // Gmail's raw-message ceiling
 
 function splitAddresses(raw: string): string[] {
@@ -83,38 +83,66 @@ export function useComposeController() {
         setError("Add at least one recipient.");
         return;
       }
+      // The Undo Send window (seconds) is a user setting: 0 = off (leave now),
+      // else the fuse the message waits out before it actually sends.
+      const undoMs =
+        Math.max(0, useSettings.getState().settings.undoSendSeconds ?? 10) * 1000;
       setSending(true);
       setError(null);
       try {
-        // Queue with a 10s fuse instead of sending immediately — that fuse
-        // IS the Undo Send window (Z pulls the draft back).
-        const outboxId = await backend.queueMail(outgoingFromCompose(c), UNDO_SEND_MS);
-        if (c.draftId !== null) void backend.deleteDraft(c.draftId).catch(() => {});
-        const saved = { ...c, draftId: null };
-        useUi.getState().closeCompose();
-        pushUndo({
-          label: "Send",
-          expiresAt: Date.now() + UNDO_SEND_MS - 1_000,
-          run: async () => {
-            try {
-              await backend.cancelOutbox(outboxId);
-              useUi.getState().startCompose(saved);
-              useUi.getState().showToast("Send undone — draft restored");
-            } catch {
-              useUi.getState().showToast("Too late — already sent");
-            }
-          },
-        });
-        if (markDone && c.threadId) {
+        const outgoing = outgoingFromCompose(c);
+
+        // "Send & mark done": archive the thread + register its own triage undo.
+        // Returns whether it ran, so the notification can say "& marked done".
+        const runMarkDone = async () => {
+          if (!(markDone && c.threadId)) return false;
           if (useMail.getState().openThreadId === c.threadId)
             useMail.getState().closeThread();
           const tid = c.threadId;
           await useMail.getState().archive(tid);
           pushTriageUndo("Mark Done", () => useMail.getState().moveToInbox(tid));
-          useUi.getState().showToast("Sent & marked done — Z to undo");
           await useUi.getState().checkInboxZero();
+          return true;
+        };
+
+        if (undoMs === 0) {
+          // Undo Send off: deliver immediately, no window, nothing to undo.
+          await backend.sendMailNow(outgoing);
+          if (c.draftId !== null) void backend.deleteDraft(c.draftId).catch(() => {});
+          useUi.getState().closeCompose();
+          const done = await runMarkDone();
+          useUi.getState().showToast(done ? "Sent & marked done" : "Sent");
         } else {
-          useUi.getState().showToast("Sent — Z to undo");
+          // Queue with the fuse — that delay IS the Undo Send window (Z pulls
+          // the draft back; the UndoSendBar shows the countdown + Send now).
+          const outboxId = await backend.queueMail(outgoing, undoMs);
+          if (c.draftId !== null) void backend.deleteDraft(c.draftId).catch(() => {});
+          const saved = { ...c, draftId: null };
+          useUi.getState().closeCompose();
+          pushUndo({
+            // Match the bar + the actual send time exactly — a shorter buffer
+            // left a dead second where Z skipped this entry and undid an older
+            // action while the mail still went out. cancelOutbox's catch handles
+            // the rare race where the flush already fired.
+            label: "Send",
+            expiresAt: Date.now() + undoMs,
+            run: async () => {
+              try {
+                await backend.cancelOutbox(outboxId);
+                useUi.getState().startCompose(saved);
+                useUi.getState().showToast("Send undone — draft restored");
+              } catch {
+                useUi.getState().showToast("Too late — already sent");
+              }
+              useUi.getState().clearPendingSend();
+            },
+          });
+          const done = await runMarkDone();
+          useUi.getState().setPendingSend({
+            outboxId,
+            expiresAt: Date.now() + undoMs,
+            label: done ? "Sent & marked done" : "Sent",
+          });
         }
         await useMail.getState().refresh();
       } catch (e) {

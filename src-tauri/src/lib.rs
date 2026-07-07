@@ -1581,6 +1581,58 @@ fn cancel_outbox(state: State<'_, AppState>, outbox_id: i64) -> Result<OutgoingM
         .ok_or("already sent".to_string())
 }
 
+/// Send a message immediately, bypassing the outbox — used when Undo Send is
+/// off (no window to wait out, nothing to undo). Grabs state via the handle so
+/// the DB lock is never held across the network await.
+#[tauri::command]
+async fn send_mail_now(app: AppHandle, mail: OutgoingMail) -> Result<(), String> {
+    validate_mail(&mail)?;
+    let account = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        store::get_accounts(&conn).active
+    };
+    deliver_mail(&app, &account, &mail).await?;
+    let _ = app.emit("mail:updated", ());
+    Ok(())
+}
+
+/// Accelerate a pending send: deliver it now instead of waiting out the Undo
+/// Send window. The row is deleted only after delivery succeeds, so a failed
+/// flush leaves it queued for the processor to retry. Its send_at is still in
+/// the future, so the processor won't double-send it in the meantime.
+#[tauri::command]
+async fn send_outbox_now(app: AppHandle, outbox_id: i64) -> Result<(), String> {
+    // Claim the row before the (async) network send so the 3s outbox processor
+    // can never also deliver it. The claim + read run under one lock, so they're
+    // atomic; a claimed row is invisible to outbox_due and to cancel_outbox.
+    let (account, mail) = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        if !store::outbox_claim(&conn, outbox_id) {
+            return Err("already sent".into());
+        }
+        store::outbox_get(&conn, outbox_id)
+    }
+    .ok_or_else(|| "already sent".to_string())?;
+    match deliver_mail(&app, &account, &mail).await {
+        Ok(()) => {
+            let state = app.state::<AppState>();
+            let conn = state.db.lock().unwrap();
+            store::outbox_delete(&conn, outbox_id);
+            let _ = app.emit("mail:updated", ());
+            Ok(())
+        }
+        Err(e) => {
+            // Delivery failed — release the claim so the processor retries it.
+            let state = app.state::<AppState>();
+            let conn = state.db.lock().unwrap();
+            store::outbox_unclaim(&conn, outbox_id);
+            Err(e)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- settings
 
 #[tauri::command]
@@ -1931,6 +1983,16 @@ pub fn run() {
                     };
                     let mut sent_any = false;
                     for (id, account, mail) in due {
+                        // Claim before the async send so a concurrent Send-now
+                        // (accelerate) can't also deliver this row; skip if it
+                        // already won the claim.
+                        let won = {
+                            let conn = state.db.lock().unwrap();
+                            store::outbox_claim(&conn, id)
+                        };
+                        if !won {
+                            continue;
+                        }
                         match deliver_mail(&outbox_handle, &account, &mail).await {
                             Ok(()) => {
                                 let conn = state.db.lock().unwrap();
@@ -1940,6 +2002,7 @@ pub fn run() {
                             Err(e) => {
                                 eprintln!("[outbox] send failed (will retry): {e}");
                                 let conn = state.db.lock().unwrap();
+                                store::outbox_unclaim(&conn, id);
                                 store::outbox_bump_attempts(&conn, id);
                             }
                         }
@@ -2083,6 +2146,8 @@ pub fn run() {
             bulk_archive,
             queue_mail,
             cancel_outbox,
+            send_mail_now,
+            send_outbox_now,
             download_attachment,
             open_attachment,
             save_draft,

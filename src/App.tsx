@@ -10,6 +10,7 @@ import { Avatar } from "@/components/Avatar";
 import { IconButton } from "@/components/Button";
 import { NavRail } from "@/components/NavRail";
 import { UndoToast } from "@/components/UndoToast";
+import { UndoSendBar } from "@/components/UndoSendBar";
 import { MailScreen } from "@/features/inbox/MailScreen";
 import { CalendarWeek } from "@/features/calendar/CalendarWeek";
 import { useCalendar } from "@/stores/calendar";
@@ -52,6 +53,7 @@ export default function App() {
   const compose = useUi((s) => s.compose);
   const askAiOpen = useUi((s) => s.askAiOpen);
   const toast = useUi((s) => s.toast);
+  const pendingSend = useUi((s) => s.pendingSend);
   const openThreadId = useMail((s) => s.openThreadId);
   const updateReady = useUpdater((s) => s.ready);
   const updateDownloading = useUpdater((s) => s.downloading);
@@ -261,7 +263,14 @@ export default function App() {
         {picker === "drafts" && <DraftsPicker />}
         {celebration && <Celebration />}
 
-        {toast && <UndoToast message={toast} />}
+        {/* Bottom-left notification stack: the Undo Send bar sits closest to the
+            corner, transient toasts stack above it. */}
+        {(toast || pendingSend) && (
+          <div className="absolute bottom-5 left-5 z-25 flex flex-col gap-2">
+            {toast && <UndoToast message={toast} />}
+            {pendingSend && <UndoSendBar />}
+          </div>
+        )}
       </main>
 
       {showShortcutBar && (

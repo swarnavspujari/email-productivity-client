@@ -103,6 +103,9 @@ pub struct Settings {
     /// Bottom shortcut-hint footer visible (default true, incl. older state).
     #[serde(default = "default_true")]
     pub show_shortcut_bar: bool,
+    /// Undo Send window in seconds (0 = off / send immediately). Default 10.
+    #[serde(default = "default_undo_send")]
+    pub undo_send_seconds: i64,
 }
 
 fn default_theme() -> String {
@@ -111,6 +114,10 @@ fn default_theme() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_undo_send() -> i64 {
+    10
 }
 
 /// Connected-account profile shown in the header (photo is a data: URI).

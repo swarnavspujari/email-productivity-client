@@ -111,6 +111,9 @@ export interface Settings {
   sidebarOpen: boolean;
   /** Bottom shortcut-hint footer visible (default true). */
   showShortcutBar: boolean;
+  /** Undo Send window in seconds: 0 = off (send immediately), else the delay
+   *  before the message actually leaves. Default 10. */
+  undoSendSeconds: number;
 }
 
 /** Connected-account profile shown in the header (picture is a data: URI). */
