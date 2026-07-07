@@ -184,6 +184,27 @@ export interface DraftRequest {
   providerId: AiProviderId | null; // null = default
 }
 
+/** One Google Drive file (picker rows, link chips, upload results). */
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number | null;
+  webViewLink: string;
+  iconLink: string | null;
+  modifiedTime: string | null;
+  owner: string | null;
+}
+
+/** Outcome of one uploaded chunk: not done yet, or the finished file. */
+export interface DriveChunkResult {
+  done: boolean;
+  file: DriveFile | null;
+}
+
+/** How linked Drive files get shared when a message sends. */
+export type DriveShareMode = "recipients" | "anyone" | "none";
+
 /** A file attached to an outgoing message (base64 so the outbox survives restarts). */
 export interface MailAttachment {
   filename: string;

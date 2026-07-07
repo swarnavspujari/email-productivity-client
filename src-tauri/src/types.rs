@@ -242,6 +242,36 @@ pub struct DraftRequest {
     pub provider_id: Option<String>,
 }
 
+/// One Google Drive file (picker rows, link chips, upload results).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveFile {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: Option<i64>,
+    pub web_view_link: String,
+    pub icon_link: Option<String>,
+    pub modified_time: Option<String>,
+    pub owner: Option<String>,
+}
+
+/// One page of Drive search results.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveSearchPage {
+    pub files: Vec<DriveFile>,
+    pub next_page_token: Option<String>,
+}
+
+/// Outcome of one uploaded chunk: not done yet, or the finished file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveChunkResult {
+    pub done: bool,
+    pub file: Option<DriveFile>,
+}
+
 /// A file attached to an outgoing message (bytes travel base64 over IPC and
 /// sit in the outbox payload so scheduled sends survive restarts).
 #[derive(Serialize, Deserialize, Clone, Debug)]

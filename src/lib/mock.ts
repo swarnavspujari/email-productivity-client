@@ -14,7 +14,10 @@ import type {
   Capabilities,
   DraftEntry,
   DraftRequest,
+  DriveFile,
+  DriveShareMode,
   KnowledgeBase,
+  MailAttachment,
   Message,
   OutgoingMail,
   ProfileInfo,
@@ -501,6 +504,107 @@ export class MockBackend implements Backend {
     }
     if (n) this.notify();
     return n;
+  }
+
+  /** Fixture Drive corpus — enough variety to demo recents, search, link
+   *  chips, and attach-as-copy in the browser with zero credentials. */
+  private driveFixtures(): DriveFile[] {
+    const d = (daysAgo: number) =>
+      new Date(Date.now() - daysAgo * 24 * 3600_000).toISOString();
+    const f = (
+      id: string,
+      name: string,
+      mimeType: string,
+      size: number | null,
+      daysAgo: number
+    ): DriveFile => ({
+      id,
+      name,
+      mimeType,
+      size,
+      webViewLink: `https://drive.google.com/file/d/${id}/view`,
+      iconLink: null,
+      modifiedTime: d(daysAgo),
+      owner: "You",
+    });
+    return [
+      f("dmock-lp-deck", "Fund II — LP Update Deck.pdf", "application/pdf", 4_812_331, 0),
+      f("dmock-model", "Helios Series A model.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 913_204, 1),
+      f("dmock-memo", "Fieldstone investment memo", "application/vnd.google-apps.document", null, 1),
+      f("dmock-board", "Board minutes 2026-06", "application/vnd.google-apps.document", null, 3),
+      f("dmock-term", "Term sheet — Northwind (signed).pdf", "application/pdf", 1_204_887, 5),
+      f("dmock-demo-video", "Product demo cut v3.mp4", "video/mp4", 812_044_211, 6),
+      f("dmock-pitch", "Pitch portfolio review.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", 28_442_133, 9),
+      f("dmock-headshot", "Speaker headshot.png", "image/png", 2_133_910, 12),
+      f("dmock-dataroom", "Data room export.zip", "application/zip", 402_133_004, 20),
+      f("dmock-onepager", "Fission one-pager.pdf", "application/pdf", 688_112, 30),
+    ];
+  }
+
+  async driveSearch(query: string): Promise<DriveFile[]> {
+    const q = query.trim().toLowerCase();
+    const all = this.driveFixtures();
+    if (!q) return all; // "recents" — fixtures are already newest-first
+    return all.filter((f) => f.name.toLowerCase().includes(q));
+  }
+
+  async driveDownloadAttach(fileId: string): Promise<MailAttachment> {
+    const file = this.driveFixtures().find((f) => f.id === fileId);
+    if (!file) throw new Error("unknown Drive file");
+    if (file.size === null)
+      throw new Error(
+        "Google Docs/Sheets/Slides can't be attached as a copy — insert the link instead"
+      );
+    if (file.size > 25_000_000)
+      throw new Error(
+        "that file is over the 25 MB attachment limit — insert the link instead"
+      );
+    const content = `Demo Drive file: ${file.name}\n(real bytes come from Google Drive in the desktop app.)`;
+    return {
+      filename: file.name,
+      mimeType: "text/plain",
+      dataBase64: btoa(content),
+    };
+  }
+
+  driveUploadFile(
+    file: File,
+    onProgress: (sent: number, total: number) => void
+  ): Promise<DriveFile> {
+    // Fake resumable upload: ~10 ticks over ~1.5 s, then a synthetic file.
+    return new Promise((resolve) => {
+      const total = file.size || 1;
+      let sent = 0;
+      const step = Math.ceil(total / 10);
+      const tick = () => {
+        sent = Math.min(sent + step, total);
+        onProgress(sent, total);
+        if (sent >= total) {
+          const id = `dmock-up-${Date.now()}`;
+          resolve({
+            id,
+            name: file.name,
+            mimeType: file.type || "application/octet-stream",
+            size: file.size,
+            webViewLink: `https://drive.google.com/file/d/${id}/view`,
+            iconLink: null,
+            modifiedTime: new Date().toISOString(),
+            owner: "You",
+          });
+          return;
+        }
+        setTimeout(tick, 150);
+      };
+      setTimeout(tick, 150);
+    });
+  }
+
+  async driveShare(
+    _fileId: string,
+    _mode: Exclude<DriveShareMode, "none">,
+    _emails: string[]
+  ): Promise<string[]> {
+    return []; // demo mode: nothing to share, nothing fails
   }
 
   /** Demo attachments have no real bytes — serve a stand-in text file. */

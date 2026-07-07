@@ -23,6 +23,18 @@ pub struct AppState {
     /// One live session per connected Gmail account, keyed by email.
     gmail: tokio::sync::Mutex<HashMap<String, GmailSession>>,
     cancels: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    /// In-flight resumable Drive uploads, keyed by the id handed to the
+    /// webview at drive_upload_begin. Compose state is in-memory, so entries
+    /// abandoned by a crash/quit just expire server-side (~1 week).
+    drive_uploads: Mutex<HashMap<u64, DriveUpload>>,
+    drive_upload_seq: std::sync::atomic::AtomicU64,
+}
+
+struct DriveUpload {
+    session_uri: String,
+    account: String,
+    sent: i64,
+    total: i64,
 }
 
 // A Google OAuth "Desktop app" client baked in at build time (CI secrets), so
@@ -954,6 +966,213 @@ async fn open_attachment(
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     tauri_plugin_opener::open_path(&path, None::<String>)
         .map_err(|_| "could not open the attachment".to_string())
+}
+
+// ---------------------------------------------------------------- drive
+
+/// The active account's email if it's a connected Gmail account, else a
+/// friendly error — every Drive command starts here.
+fn active_gmail(state: &State<'_, AppState>) -> Result<String, String> {
+    let active = {
+        let conn = state.db.lock().unwrap();
+        store::active_account(&conn)
+    };
+    if active.provider != "gmail" {
+        return Err("Connect a Gmail account to use Google Drive".into());
+    }
+    Ok(active.email)
+}
+
+#[tauri::command]
+async fn drive_search(
+    state: State<'_, AppState>,
+    query: String,
+    page_token: Option<String>,
+) -> Result<DriveSearchPage, String> {
+    if query.len() > 200 {
+        return Err("query too long".into());
+    }
+    let email = active_gmail(&state)?;
+    let mut sessions = state.gmail.lock().await;
+    let session = sessions
+        .get_mut(&email)
+        .ok_or("account not connected — reconnect Gmail")?;
+    let (files, next_page_token) =
+        mail::drive::search(&state.http, session, &query, page_token.as_deref()).await?;
+    Ok(DriveSearchPage { files, next_page_token })
+}
+
+/// "Attach as copy": Drive file bytes → a normal outgoing attachment.
+#[tauri::command]
+async fn drive_download_attach(
+    state: State<'_, AppState>,
+    file_id: String,
+) -> Result<MailAttachment, String> {
+    valid_id(&file_id)?;
+    let email = active_gmail(&state)?;
+    let mut sessions = state.gmail.lock().await;
+    let session = sessions
+        .get_mut(&email)
+        .ok_or("account not connected — reconnect Gmail")?;
+    mail::drive::download(&state.http, session, &file_id).await
+}
+
+/// The account's "Fission Mail Attachments" folder id, kv-cached and
+/// re-created if the cached one was deleted.
+async fn drive_app_folder(
+    state: &State<'_, AppState>,
+    email: &str,
+    session: &mut GmailSession,
+) -> Result<String, String> {
+    let kv_key = format!("drive_folder:{email}");
+    let cached: Option<String> = {
+        let conn = state.db.lock().unwrap();
+        store::get_json(&conn, &kv_key)
+    };
+    if let Some(id) = cached {
+        if mail::drive::folder_alive(&state.http, session, &id).await {
+            return Ok(id);
+        }
+    }
+    let id = mail::drive::find_or_create_app_folder(&state.http, session).await?;
+    {
+        let conn = state.db.lock().unwrap();
+        let _ = store::set_json(&conn, &kv_key, &id);
+    }
+    Ok(id)
+}
+
+/// Open a resumable upload into the app folder. Returns the upload id the
+/// webview passes back with each raw-body chunk.
+#[tauri::command]
+async fn drive_upload_begin(
+    state: State<'_, AppState>,
+    filename: String,
+    mime: String,
+    size: i64,
+) -> Result<u64, String> {
+    if filename.is_empty() || filename.len() > 255 {
+        return Err("invalid filename".into());
+    }
+    if size <= 0 || size > 2_000_000_000 {
+        return Err("files up to 2 GB can be uploaded to Drive from here".into());
+    }
+    let mime = if mime.trim().is_empty() { "application/octet-stream".into() } else { mime };
+    let email = active_gmail(&state)?;
+    let session_uri = {
+        let mut sessions = state.gmail.lock().await;
+        let session = sessions
+            .get_mut(&email)
+            .ok_or("account not connected — reconnect Gmail")?;
+        let folder = drive_app_folder(&state, &email, session).await?;
+        mail::drive::upload_begin(&state.http, session, &folder, &filename, &mime, size).await?
+    };
+    let id = state
+        .drive_upload_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state.drive_uploads.lock().unwrap().insert(
+        id,
+        DriveUpload { session_uri, account: email, sent: 0, total: size },
+    );
+    Ok(id)
+}
+
+/// One chunk of an in-flight upload. Raw invoke body (no JSON/base64);
+/// the upload id rides in the `upload-id` request header.
+#[tauri::command]
+async fn drive_upload_chunk(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<DriveChunkResult, String> {
+    let upload_id: u64 = request
+        .headers()
+        .get("upload-id")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .ok_or("missing upload-id header")?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("chunk must be a raw request body".into());
+    };
+    let bytes = bytes.clone();
+    if bytes.is_empty() {
+        return Err("empty chunk".into());
+    }
+    let (session_uri, account, sent, total) = {
+        let uploads = state.drive_uploads.lock().unwrap();
+        let u = uploads.get(&upload_id).ok_or("unknown upload")?;
+        (u.session_uri.clone(), u.account.clone(), u.sent, u.total)
+    };
+    if sent + bytes.len() as i64 > total {
+        return Err("chunk overruns the declared file size".into());
+    }
+    let token = {
+        let mut sessions = state.gmail.lock().await;
+        let session = sessions
+            .get_mut(&account)
+            .ok_or("account not connected — reconnect Gmail")?;
+        session.bearer(&state.http).await?
+    };
+    let result =
+        mail::drive::upload_chunk(&state.http, &token, &session_uri, sent, total, bytes.clone())
+            .await;
+    match result {
+        Ok(Some(file)) => {
+            state.drive_uploads.lock().unwrap().remove(&upload_id);
+            Ok(DriveChunkResult { done: true, file: Some(file) })
+        }
+        Ok(None) => {
+            let mut uploads = state.drive_uploads.lock().unwrap();
+            if let Some(u) = uploads.get_mut(&upload_id) {
+                u.sent += bytes.len() as i64;
+            }
+            Ok(DriveChunkResult { done: false, file: None })
+        }
+        Err(e) => {
+            // dead session URIs can't be resumed — drop the entry
+            state.drive_uploads.lock().unwrap().remove(&upload_id);
+            Err(e)
+        }
+    }
+}
+
+/// Abandon an in-flight upload (user removed the pending chip / send failed).
+#[tauri::command]
+async fn drive_upload_cancel(state: State<'_, AppState>, upload_id: u64) -> Result<(), String> {
+    let entry = state.drive_uploads.lock().unwrap().remove(&upload_id);
+    if let Some(u) = entry {
+        mail::drive::upload_cancel(&state.http, &u.session_uri).await;
+    }
+    Ok(())
+}
+
+/// Share-on-send: grant recipients (or anyone-with-link) read access to a
+/// linked file. Returns addresses that couldn't be shared — the send
+/// proceeds regardless, mirroring Gmail.
+#[tauri::command]
+async fn drive_share(
+    state: State<'_, AppState>,
+    file_id: String,
+    mode: String,
+    emails: Vec<String>,
+) -> Result<Vec<String>, String> {
+    valid_id(&file_id)?;
+    if !matches!(mode.as_str(), "recipients" | "anyone") {
+        return Err("invalid share mode".into());
+    }
+    if emails.len() > 100 {
+        return Err("too many recipients".into());
+    }
+    for e in &emails {
+        if !e.contains('@') || e.len() > 254 || e.contains(['\r', '\n']) {
+            return Err(format!("\"{e}\" is not a valid address"));
+        }
+    }
+    let email = active_gmail(&state)?;
+    let mut sessions = state.gmail.lock().await;
+    let session = sessions
+        .get_mut(&email)
+        .ok_or("account not connected — reconnect Gmail")?;
+    mail::drive::share(&state.http, session, &file_id, &mode, &emails).await
 }
 
 // ---------------------------------------------------------------- drafts
@@ -2021,6 +2240,8 @@ pub fn run() {
                 http,
                 gmail: tokio::sync::Mutex::new(sessions),
                 cancels: Mutex::new(HashMap::new()),
+                drive_uploads: Mutex::new(HashMap::new()),
+                drive_upload_seq: std::sync::atomic::AtomicU64::new(1),
             });
 
             // Dev-only: FISSION_AI_SMOKE=1 streams one real draft at startup and
@@ -2249,6 +2470,12 @@ pub fn run() {
             send_outbox_now,
             download_attachment,
             open_attachment,
+            drive_search,
+            drive_download_attach,
+            drive_upload_begin,
+            drive_upload_chunk,
+            drive_upload_cancel,
+            drive_share,
             save_draft,
             list_drafts,
             delete_draft,

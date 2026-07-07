@@ -88,34 +88,9 @@ pub async fn list_events(
     Ok(events)
 }
 
-/// Turn a raw Calendar 403 into actionable guidance. A 403 has (at least) three
-/// distinct causes; the response body (preserved by gmail::get_json) tells them
-/// apart. Messages keep distinct substrings ("enable" vs "reconnect") so
-/// CalendarPanel can style the guidance. Non-403 errors pass through unchanged.
+/// Calendar flavor of the shared Google-403 classifier (mail/mod.rs).
 fn classify_calendar_error(e: &str) -> String {
-    if !e.contains("(403") {
-        return e.to_string();
-    }
-    let api_disabled = e.contains("accessNotConfigured")
-        || e.contains("has not been used in project")
-        || e.contains("SERVICE_DISABLED");
-    let scope_missing = e.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
-        || e.contains("insufficientPermissions")
-        || e.contains("insufficient");
-    if api_disabled {
-        "The Google Calendar API isn't enabled for this app's Google Cloud project. \
-         Enable it at console.cloud.google.com → APIs & Services → Library → \
-         Google Calendar API → Enable, then reopen the panel."
-            .to_string()
-    } else if scope_missing {
-        "Calendar access wasn't granted for this account — disconnect and reconnect \
-         Gmail, and check the Calendar box on Google's consent screen."
-            .to_string()
-    } else {
-        "Calendar access was denied (403). If you just turned on the API, wait a \
-         minute and try again."
-            .to_string()
-    }
+    crate::mail::classify_google_error(e, "Google Calendar API", "Calendar")
 }
 
 /// Google event times: {"dateTime": rfc3339} for timed, {"date": "YYYY-MM-DD"}

@@ -12,6 +12,10 @@ import type {
   DailyPhoto,
   DraftEntry,
   DraftRequest,
+  DriveChunkResult,
+  DriveFile,
+  DriveShareMode,
+  MailAttachment,
   LintHit,
   ProfileInfo,
   KnowledgeBase,
@@ -97,6 +101,24 @@ export interface Backend {
    *  Gmail. Returns how many new threads were added. */
   loadOlder(view: MailView): Promise<number>;
   bulkArchive(opts: BulkArchiveOpts): Promise<number>;
+
+  /** Drive picker: recents (empty query) or name/full-text search. */
+  driveSearch(query: string): Promise<DriveFile[]>;
+  /** "Attach as copy": Drive file bytes → a normal outgoing attachment. */
+  driveDownloadAttach(fileId: string): Promise<MailAttachment>;
+  /** Upload a local file to the app's Drive folder (oversized-attachment
+   *  flow). Chunked; onProgress fires with exact bytes handed to Drive. */
+  driveUploadFile(
+    file: File,
+    onProgress: (sent: number, total: number) => void
+  ): Promise<DriveFile>;
+  /** Share-on-send. Returns addresses that couldn't be shared (send
+   *  proceeds regardless). mode "none" is handled by the caller. */
+  driveShare(
+    fileId: string,
+    mode: Exclude<DriveShareMode, "none">,
+    emails: string[]
+  ): Promise<string[]>;
 
   /** Save via OS dialog. Resolves to the path, or null if cancelled. */
   downloadAttachment(attachmentId: string): Promise<string | null>;
@@ -272,6 +294,57 @@ class TauriBackend implements Backend {
   }
   bulkArchive(opts: BulkArchiveOpts) {
     return invoke<number>("bulk_archive", { opts });
+  }
+  driveSearch(query: string) {
+    return invoke<{ files: DriveFile[]; nextPageToken: string | null }>(
+      "drive_search",
+      { query, pageToken: null }
+    ).then((page) => page.files);
+  }
+  driveDownloadAttach(fileId: string) {
+    return invoke<MailAttachment>("drive_download_attach", { fileId });
+  }
+  async driveUploadFile(
+    file: File,
+    onProgress: (sent: number, total: number) => void
+  ): Promise<DriveFile> {
+    const uploadId = await invoke<number>("drive_upload_begin", {
+      filename: file.name,
+      mime: file.type || "application/octet-stream",
+      size: file.size,
+    });
+    // 4 MiB chunks (Google requires a multiple of 256 KiB) as raw invoke
+    // bodies — no base64 JSON, bounded memory, exact progress.
+    const CHUNK = 4 * 1024 * 1024;
+    let offset = 0;
+    try {
+      for (;;) {
+        const end = Math.min(offset + CHUNK, file.size);
+        const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+        const res = await invoke<DriveChunkResult>("drive_upload_chunk", bytes, {
+          headers: { "upload-id": String(uploadId) },
+        });
+        offset = end;
+        onProgress(offset, file.size);
+        if (res.done) {
+          if (!res.file) throw new Error("upload finished without file metadata");
+          return res.file;
+        }
+        if (offset >= file.size) {
+          throw new Error("Drive did not acknowledge the final chunk");
+        }
+      }
+    } catch (e) {
+      void invoke("drive_upload_cancel", { uploadId }).catch(() => {});
+      throw e;
+    }
+  }
+  driveShare(
+    fileId: string,
+    mode: Exclude<DriveShareMode, "none">,
+    emails: string[]
+  ) {
+    return invoke<string[]>("drive_share", { fileId, mode, emails });
   }
   downloadAttachment(attachmentId: string) {
     return invoke<string | null>("download_attachment", { attachmentId });
