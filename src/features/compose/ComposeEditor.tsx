@@ -25,10 +25,11 @@ import {
 } from "./harper";
 import { SelectionBubble } from "./SelectionBubble";
 
-/** How the editor is hosted: the "modal" new-message composer keeps its
- *  persistent top toolbar and in-body signature; the inline "dock" reply
- *  composer drops the toolbar for a selection bubble, gains text color, and
- *  wraps its signature + quoted history in a collapsible trailer. */
+/** How the editor is hosted. Both composers format via the floating selection
+ *  bubble (Superhuman-style, no persistent toolbar); `variant` only controls
+ *  sizing — the "modal" new-message editor flexes to fill its card and scrolls,
+ *  the inline "dock" reply editor auto-grows and hands ↓-at-end off to the •••
+ *  that reveals the signature + quoted-history trailer. */
 export type ComposeVariant = "modal" | "dock";
 
 /** Seed content for the editor. Rich HTML passes through; a legacy plain-text
@@ -51,40 +52,7 @@ function normalizeUrl(v: string): string {
   return `https://${v}`;
 }
 
-/** A compact formatting toolbar button. tabIndex=-1 keeps Tab on To→…→body;
- *  onMouseDown-preventDefault stops the click from stealing the caret. */
-function TbBtn({
-  active,
-  onClick,
-  title,
-  children,
-}: {
-  active?: boolean;
-  onClick: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      tabIndex={-1}
-      title={title}
-      aria-label={title}
-      aria-pressed={active}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className={`flex h-7 min-w-7 items-center justify-center rounded px-1.5 text-[13px] ${
-        active
-          ? "bg-accent-dim text-accent-strong"
-          : "text-ink-2 hover:bg-hover hover:text-ink"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** Inline link editor (Ctrl+K or the toolbar 🔗). Enter applies, empty removes,
+/** Inline link editor (Ctrl+K or the selection-bubble 🔗). Enter applies, empty removes,
  *  Esc closes without touching compose. */
 function LinkBar({ editor, onClose }: { editor: Editor; onClose: () => void }) {
   const [url, setUrl] = useState<string>(
@@ -249,9 +217,9 @@ export function ComposeEditor({
       Image.configure({ allowBase64: true }),
       Placeholder.configure({ placeholder }),
       Harper.configure({ lint: (t) => backend.lintText(t), debounceMs: 350 }),
-      // The reply dock adds text color for the selection bubble; the
-      // new-message modal keeps its simpler schema untouched.
-      ...(isDock ? [TextStyle, Color] : []),
+      // Text color for the selection bubble (both composers).
+      TextStyle,
+      Color,
     ],
     content: initialRef.current,
     // Replies/forwards land the caret at the top, above the signature; new mail
@@ -311,61 +279,6 @@ export function ComposeEditor({
 
   return (
     <>
-      {/* The modal keeps a persistent toolbar; the dock formats via the
-          selection bubble only (Superhuman-style). */}
-      {!isDock && (
-        <div className="flex items-center gap-0.5 border-b border-line px-3 py-1">
-          {editor && (
-            <>
-              <TbBtn
-                title="Bold (Ctrl+B)"
-                active={editor.isActive("bold")}
-                onClick={() => editor.chain().focus().toggleBold().run()}
-              >
-                <span className="font-bold">B</span>
-              </TbBtn>
-              <TbBtn
-                title="Italic (Ctrl+I)"
-                active={editor.isActive("italic")}
-                onClick={() => editor.chain().focus().toggleItalic().run()}
-              >
-                <span className="italic">I</span>
-              </TbBtn>
-              <TbBtn
-                title="Underline (Ctrl+U)"
-                active={editor.isActive("underline")}
-                onClick={() => editor.chain().focus().toggleUnderline().run()}
-              >
-                <span className="underline">U</span>
-              </TbBtn>
-              <span className="mx-1 h-4 w-px bg-line" />
-              <TbBtn
-                title="Bullet list"
-                active={editor.isActive("bulletList")}
-                onClick={() => editor.chain().focus().toggleBulletList().run()}
-              >
-                •
-              </TbBtn>
-              <TbBtn
-                title="Numbered list"
-                active={editor.isActive("orderedList")}
-                onClick={() => editor.chain().focus().toggleOrderedList().run()}
-              >
-                1.
-              </TbBtn>
-              <span className="mx-1 h-4 w-px bg-line" />
-              <TbBtn
-                title="Link (Ctrl+K)"
-                active={editor.isActive("link")}
-                onClick={() => setLinkOpen(true)}
-              >
-                🔗
-              </TbBtn>
-            </>
-          )}
-        </div>
-      )}
-
       <div
         className={
           isDock
@@ -376,7 +289,7 @@ export function ComposeEditor({
         <EditorContent editor={editor} />
       </div>
 
-      {editor && isDock && (
+      {editor && (
         <SelectionBubble editor={editor} onLink={() => setLinkOpen(true)} />
       )}
 

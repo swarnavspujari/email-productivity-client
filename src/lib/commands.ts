@@ -171,6 +171,33 @@ function advanceConversation(dir: 1 | -1) {
   }
 }
 
+/** The new-message composer's ↑/↓ header chevrons (and K/J): background the
+ *  in-progress draft and jump to the previous/next email, opening it full-screen
+ *  — the Superhuman "flip through the inbox from compose" move. Unlike
+ *  advanceConversation, this ALWAYS opens the target thread (a new compose has
+ *  no thread open behind it), and first force-saves so nothing is lost. */
+export function composeGoToEmail(dir: 1 | -1) {
+  const u = ui();
+  const c = u.compose;
+  if (!c) return;
+  // Resolve the target BEFORE tearing down the composer: if the visible list is
+  // empty (empty split, empty label/Trash view, just-switched account) there's
+  // nothing to open, so keep the draft up rather than dead-ending on a blank
+  // list. Mirrors advanceConversation's `if (t)` guard.
+  const m = mail();
+  m.moveSelection(dir);
+  const t = visibleThreads(useMail.getState())[useMail.getState().selectedIndex];
+  if (!t) return;
+  // closeCompose keeps (never deletes) the draft, but the last keystrokes may
+  // predate the 800ms autosave — flush them so the draft is truly in Drafts.
+  if (composeHasContent(c)) {
+    const { draftId, ...payload } = c;
+    void backend.saveDraft(draftId, JSON.stringify(payload)).catch(() => {});
+  }
+  u.closeCompose();
+  void m.openThread(t.id);
+}
+
 /** Standard undo entry for a triage action: run the inverse, refresh, toast. */
 export function pushTriageUndo(label: string, inverse: () => Promise<void>) {
   pushUndo({
@@ -695,6 +722,25 @@ export function allCommands(): Command[] {
       group: "Compose",
       when: () => inCompose(),
       run: () => ui().openPicker("snippet"),
+    },
+    // New-message composer only: background the draft and open the prev/next
+    // email (header ↑/↓ chevrons mirror these). Bare K/J are suppressed while a
+    // field has focus, so they fire only when the caret isn't in a text input.
+    {
+      id: "compose.prevEmail",
+      title: "New Message: Previous Email",
+      group: "Compose",
+      hidden: true,
+      when: () => ui().compose?.mode === "new",
+      run: () => composeGoToEmail(-1),
+    },
+    {
+      id: "compose.nextEmail",
+      title: "New Message: Next Email",
+      group: "Compose",
+      hidden: true,
+      when: () => ui().compose?.mode === "new",
+      run: () => composeGoToEmail(1),
     },
     // Reveal + focus a reply-dock field. These fire even while typing (mod+
     // combos pass the editable guard); Tab then walks To→Cc→Bcc→Subject→body.

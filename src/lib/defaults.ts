@@ -73,6 +73,11 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "compose.expandCc": "mod+shift+c",
   "compose.expandBcc": "mod+shift+b",
   "compose.expandSubject": "mod+shift+s",
+  // New-message composer: K/J background the draft and jump to the prev/next
+  // email (the header ↑/↓ chevrons do the same). Suppressed while a field has
+  // focus, so typing "j"/"k" is never hijacked.
+  "compose.prevEmail": "k",
+  "compose.nextEmail": "j",
   "theme.toggle": "",
   "calendar.toggle": "",
   "calendar.open": "g c",
