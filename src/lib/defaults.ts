@@ -76,6 +76,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "compose.expandCc": "mod+shift+c",
   "compose.expandBcc": "mod+shift+b",
   "compose.expandSubject": "mod+shift+s",
+  // D = Drive. Superhuman has no equivalent key; mod+shift+d is unclaimed.
+  "compose.attachDrive": "mod+shift+d",
   // New-message composer: K/J background the draft and jump to the prev/next
   // email (the header ↑/↓ chevrons do the same). Suppressed while a field has
   // focus, so typing "j"/"k" is never hijacked.

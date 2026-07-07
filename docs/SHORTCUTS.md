@@ -78,13 +78,14 @@ Aligned with **Superhuman (current Windows edition)**. `mod` = `Ctrl` on Windows
 | `Ctrl+Shift+Enter` | Send & Mark Done |
 | `Ctrl+Shift+L` | Send Later… (delivers even after an app restart) |
 | `Ctrl+;` | Insert snippet (from Settings → Knowledge Base) |
+| `Ctrl+Shift+D` | Attach from Google Drive… (`↵` inserts a link chip · `Ctrl+↵` attaches a copy ≤ 25 MB) |
 | `Esc` | Close AI bar, then close compose — **the draft is saved automatically** (`G`,`D` resumes; Discard deletes) |
 
 Rich text: the compose body is a full **WYSIWYG editor** — the keys above and rich paste (sanitized). The message is sent as HTML with a plain-text fallback.
 
 Replying: `R`/`A`/`F` (or `Enter` in a thread) thread the composer **inline into the conversation**, at the same width as the email above it. Recipients collapse to a one-line summary (`Ctrl+Shift+O/C/B/S` to edit a field). Select text in your message to get a floating **formatting bubble** (bold, italic, underline, link, text color, bulleted/numbered list, block quote). Your **signature and the quoted email** are tucked behind a subtle `•••` and both **render faithfully AND stay editable** (real email HTML — tables, images, layout — in a sandboxed frame) — press `↓` to focus the `•••` then `Enter`, or click it, then edit in place; `Ctrl+Enter` still sends and `Esc` collapses it. They're appended to the message on send. New-message compose (`C`) opens as a centered window with a persistent toolbar.
 
-Attachments: **📎 Attach** in compose (25 MB total). In the reading pane, click an attachment to open it, `⭳` to save. HTML mail renders sanitized (scripts stripped) with quoted trails collapsed behind `•••`.
+Attachments: **📎 Attach** in compose opens a flyout — local files (25 MB total) or **Google Drive** (`Ctrl+Shift+D`): pick a file to insert it as a **link chip**, or `Ctrl+↵` to attach a real copy (≤ 25 MB). Local files **over 25 MB upload to Drive automatically** (with your OK) and send as a link, like Gmail; on send you choose who the linked files get shared with. In the reading pane, click an attachment to open it, `⭳` to save. HTML mail renders sanitized (scripts stripped) with quoted trails collapsed behind `•••`.
 
 Spelling & grammar: the compose body is checked locally by **Harper** (nothing leaves the machine). Misspellings get a wavy underline that follows your edits — put the caret in one to see suggestions, click one to apply, `×` to ignore.
 

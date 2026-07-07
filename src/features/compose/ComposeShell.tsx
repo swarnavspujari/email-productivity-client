@@ -8,7 +8,7 @@
 //     signature is seeded inside the body; no quoted history.
 //   dock (reply/forward): grows inline; signature + quoted history render behind
 //     the ••• in a sandboxed, editable QuoteFrame.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { useUi } from "@/stores/ui";
 import { ComposeEditor } from "./ComposeEditor";
@@ -33,6 +33,21 @@ export function ComposeShell({ variant }: { variant: "modal" | "dock" }) {
   const onBody = useCallback((body: string) => {
     useUi.setState((s) => ({ compose: s.compose ? { ...s.compose, body } : null }));
   }, []);
+
+  // Insert rich HTML (Drive link chips) at the caret. An event, not store
+  // state: the editor is uncontrolled after seeding, so writing to
+  // compose.body would never reach it — only the live instance can insert.
+  useEffect(() => {
+    if (!editor) return;
+    const handler = (e: Event) => {
+      const html = (e as CustomEvent).detail?.html as string | undefined;
+      if (!html) return;
+      // Trailing space exits the link mark so typing after a chip is plain.
+      editor.chain().focus().insertContent(`${html} `).run();
+    };
+    window.addEventListener("fission:insert-html", handler);
+    return () => window.removeEventListener("fission:insert-html", handler);
+  }, [editor]);
 
   const isDock = variant === "dock";
   const hasQuote = compose.quote.trim().length > 0;

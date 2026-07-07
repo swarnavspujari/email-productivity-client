@@ -265,6 +265,8 @@ pub fn default_settings() -> Settings {
         ("compose.expandCc", "mod+shift+c"),
         ("compose.expandBcc", "mod+shift+b"),
         ("compose.expandSubject", "mod+shift+s"),
+        // D = Drive (v0.15). Superhuman has no equivalent key.
+        ("compose.attachDrive", "mod+shift+d"),
         // New-message composer nav (v0.12) — parity with defaults.ts so the
         // desktop app binds K/J, not just the header chevrons.
         ("compose.prevEmail", "k"),

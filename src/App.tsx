@@ -23,6 +23,7 @@ import { ZeroSweep } from "@/features/pickers/ZeroSweep";
 import { SendLaterPicker } from "@/features/pickers/SendLaterPicker";
 import { SnippetPicker } from "@/features/pickers/SnippetPicker";
 import { DraftsPicker } from "@/features/pickers/DraftsPicker";
+import { DrivePicker } from "@/features/pickers/DrivePicker";
 import { Celebration } from "@/features/zero/Celebration";
 import { SearchScreen } from "@/features/search/SearchScreen";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -267,6 +268,7 @@ export default function App() {
         {picker === "sendLater" && <SendLaterPicker />}
         {picker === "snippet" && <SnippetPicker />}
         {picker === "drafts" && <DraftsPicker />}
+        {picker === "drivePicker" && <DrivePicker />}
         {celebration && <Celebration />}
 
         {/* Bottom-left notification stack: the Undo Send bar sits closest to the

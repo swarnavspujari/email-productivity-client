@@ -32,6 +32,27 @@ import { SelectionBubble } from "./SelectionBubble";
  *  that reveals the signature + quoted-history trailer. */
 export type ComposeVariant = "modal" | "dock";
 
+/** The Link mark, extended so Drive link chips survive the schema: their
+ *  inline style (the chip box — email-safe, renders in any client) and the
+ *  data-drive-chip/-name tags (how the send path finds them) round-trip
+ *  through parse/serialize instead of being stripped to a bare href. */
+const ChipLink = Link.extend({
+  addAttributes() {
+    const attr = (name: string) => ({
+      default: null as string | null,
+      parseHTML: (el: HTMLElement) => el.getAttribute(name),
+      renderHTML: (attrs: Record<string, string | null>) =>
+        attrs[name] ? { [name]: attrs[name] } : {},
+    });
+    return {
+      ...this.parent?.(),
+      style: attr("style"),
+      "data-drive-chip": attr("data-drive-chip"),
+      "data-drive-name": attr("data-drive-name"),
+    };
+  },
+});
+
 /** Seed content for the editor. Rich HTML passes through; a legacy plain-text
  *  draft body (saved before the WYSIWYG editor) is converted to paragraphs so
  *  its line breaks survive the round-trip. */
@@ -207,7 +228,7 @@ export function ComposeEditor({
     extensions: [
       StarterKit,
       Underline,
-      Link.configure({
+      ChipLink.configure({
         openOnClick: false,
         autolink: true,
         HTMLAttributes: { rel: "noopener noreferrer nofollow" },

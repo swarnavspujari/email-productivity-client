@@ -107,6 +107,7 @@ export async function startReply(
     cc: "",
     bcc: "",
     attachments: [],
+    driveLinks: [],
     draftId: null,
     subject:
       mode === "forward"
@@ -244,6 +245,7 @@ export function allCommands(): Command[] {
           body: sig ? `<p></p>${sig}` : "",
           quote: "",
           attachments: [],
+          driveLinks: [],
           draftId: null,
         });
       },
@@ -369,6 +371,7 @@ export function allCommands(): Command[] {
             body: "<p>Please unsubscribe me from this list.</p>",
             quote: "",
             attachments: [],
+            driveLinks: [],
             draftId: null,
           });
         } else {
@@ -722,6 +725,13 @@ export function allCommands(): Command[] {
       group: "Compose",
       when: () => inCompose(),
       run: () => ui().openPicker("snippet"),
+    },
+    {
+      id: "compose.attachDrive",
+      title: "Attach from Google Drive…",
+      group: "Compose",
+      when: () => inCompose(),
+      run: () => ui().openPicker("drivePicker"),
     },
     // New-message composer only: background the draft and open the prev/next
     // email (header ↑/↓ chevrons mirror these). Bare K/J are suppressed while a

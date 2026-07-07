@@ -24,8 +24,48 @@ export interface ComposeState {
    *  reply carries its quote *inside* the editable body, behind the •••). */
   quote: string;
   attachments: MailAttachment[];
+  /** Google Drive files linked as chips in the body (share-on-send reads
+   *  this; chips the user deleted from the body are skipped at send). */
+  driveLinks: DriveLinkRef[];
   /** Persisted-draft row backing this compose; null until first autosave. */
   draftId: number | null;
+}
+
+/** One Drive file linked into the body as a chip. */
+export interface DriveLinkRef {
+  fileId: string;
+  name: string;
+  url: string;
+  size: number | null;
+}
+
+/** The email-safe Drive link chip: an inline-styled anchor (renders in any
+ *  mail client), tagged data-drive-chip so the send path can find it, kept
+ *  intact in the editor by the extended Link mark (ComposeEditor). */
+export function driveChipHtml(ref: DriveLinkRef): string {
+  const style =
+    "display:inline-block;padding:3px 10px;margin:2px 0;border:1px solid #dadce0;" +
+    "border-radius:8px;text-decoration:none;color:#1a73e8;background:#f8f9fa;" +
+    "font-size:13px;line-height:20px";
+  return (
+    `<a href="${escapeHtml(ref.url)}" data-drive-chip="${escapeHtml(ref.fileId)}" ` +
+    `data-drive-name="${escapeHtml(ref.name)}" rel="noopener noreferrer" ` +
+    `style="${style}">📄 ${escapeHtml(ref.name)}</a>`
+  );
+}
+
+/** The Drive chips actually present in a compose body (the user may have
+ *  deleted some since insertion): fileId → href. */
+export function driveChipsInHtml(html: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!html.includes("data-drive-chip")) return out;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const a of Array.from(doc.querySelectorAll("a[data-drive-chip]"))) {
+    const id = a.getAttribute("data-drive-chip");
+    const href = a.getAttribute("href");
+    if (id && href) out.set(id, href);
+  }
+  return out;
 }
 
 export function escapeHtml(s: string): string {
@@ -60,9 +100,18 @@ function htmlToText(html: string): string {
       if (child.nodeType === Node.TEXT_NODE) {
         out += child.textContent ?? "";
       } else if (child.nodeType === Node.ELEMENT_NODE) {
-        const tag = (child as HTMLElement).tagName;
+        const el = child as HTMLElement;
+        const tag = el.tagName;
         if (tag === "BR") {
           out += "\n";
+          continue;
+        }
+        // A Drive link chip flattens to "name — url" on its own line (the
+        // glyph + styling are meaningless in the plain-text alternative).
+        const chipId = el.getAttribute?.("data-drive-chip");
+        if (chipId) {
+          const name = el.getAttribute("data-drive-name") || el.textContent || "file";
+          out += `\n${name.trim()} — ${el.getAttribute("href") ?? ""}\n`;
           continue;
         }
         walk(child);
@@ -173,7 +222,8 @@ export type Picker =
   | "zeroSweep"
   | "sendLater"
   | "snippet"
-  | "drafts";
+  | "drafts"
+  | "drivePicker";
 
 interface UiState {
   screen: Screen;

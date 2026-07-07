@@ -5,50 +5,69 @@ export interface PickerItem {
   label: string;
   detail?: string;
   run: () => void | Promise<void>;
+  /** Secondary action on Ctrl/Cmd+Enter (e.g. Drive "attach as copy"). */
+  runAlt?: () => void | Promise<void>;
 }
 
-/** Shared chrome for small keyboard-driven option lists (snooze, move…). */
+/** Shared chrome for small keyboard-driven option lists (snooze, move…).
+ *  Two filter modes: `filterable` filters the given items locally;
+ *  `onQuery` hands the typed query to the owner (async sources like Drive)
+ *  and renders whatever items come back. */
 export function PickerShell({
   title,
   items,
   filterable,
+  onQuery,
+  queryPlaceholder,
+  footer,
 }: {
   title: string;
   items: PickerItem[];
   filterable?: boolean;
+  onQuery?: (query: string) => void;
+  queryPlaceholder?: string;
+  footer?: React.ReactNode;
 }) {
   const [index, setIndex] = useState(0);
   const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const hasInput = filterable || onQuery !== undefined;
   const shown = filterable
     ? items.filter((i) => i.label.toLowerCase().includes(query.toLowerCase()))
     : items;
 
   useEffect(() => {
-    (filterable ? inputRef : boxRef).current?.focus();
-  }, [filterable]);
+    (hasInput ? inputRef : boxRef).current?.focus();
+  }, [hasInput]);
 
-  useEffect(() => setIndex(0), [query]);
+  useEffect(() => setIndex(0), [query, items.length]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // stopPropagation everywhere: this handler sits on BOTH the filter input
+    // and the outer box, so a handled key must not bubble input → box and run
+    // twice (Enter double-ran the action — two chips from one pick).
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
       useUi.getState().closePicker();
-    } else if (e.key === "ArrowDown" || (e.key === "j" && !filterable)) {
+    } else if (e.key === "ArrowDown" || (e.key === "j" && !hasInput)) {
       e.preventDefault();
+      e.stopPropagation();
       setIndex((i) => Math.min(shown.length - 1, i + 1));
-    } else if (e.key === "ArrowUp" || (e.key === "k" && !filterable)) {
+    } else if (e.key === "ArrowUp" || (e.key === "k" && !hasInput)) {
       e.preventDefault();
+      e.stopPropagation();
       setIndex((i) => Math.max(0, i - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
+      e.stopPropagation();
       const item = shown[index];
-      if (item) {
-        useUi.getState().closePicker();
-        void item.run();
-      }
+      if (!item) return;
+      const alt = (e.ctrlKey || e.metaKey) && item.runAlt;
+      useUi.getState().closePicker();
+      void (alt ? item.runAlt!() : item.run());
     }
   };
 
@@ -67,13 +86,16 @@ export function PickerShell({
         <div className="border-b border-line px-4 py-3 text-[13px] font-medium text-ink">
           {title}
         </div>
-        {filterable && (
+        {hasInput && (
           <input
             ref={inputRef}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              onQuery?.(e.target.value);
+            }}
             onKeyDown={onKeyDown}
-            placeholder="Filter…"
+            placeholder={queryPlaceholder ?? "Filter…"}
             className="w-full border-b border-line bg-transparent px-4 py-2.5 text-[13px] text-ink outline-none placeholder:text-ink-3"
           />
         )}
@@ -102,6 +124,11 @@ export function PickerShell({
             </div>
           )}
         </div>
+        {footer && (
+          <div className="border-t border-line px-4 py-2 text-[11.5px] text-ink-3">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );
