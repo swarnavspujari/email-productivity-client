@@ -155,6 +155,20 @@ pub struct Capabilities {
     pub legacy_grant: bool,
 }
 
+/// One Gmail send-as alias (users.settings.sendAs, read-only surface).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SendAsAlias {
+    pub email: String,
+    pub display_name: String,
+    /// The alias Gmail uses by default for new mail.
+    pub is_default: bool,
+    /// Primary address, or a verified alias (Gmail refuses unverified Froms).
+    pub verified: bool,
+    /// The alias has its own Gmail-side signature configured.
+    pub has_signature: bool,
+}
+
 /// Connected-account profile shown in the header (photo is a data: URI).
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]

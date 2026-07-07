@@ -22,6 +22,7 @@ import type {
   Message,
   OutgoingMail,
   SearchResult,
+  SendAsAlias,
   Settings,
   Streaks,
   Thread,
@@ -129,6 +130,9 @@ export interface Backend {
   saveDraft(draftId: number | null, payload: string): Promise<number>;
   listDrafts(): Promise<DraftEntry[]>;
   deleteDraft(draftId: number): Promise<void>;
+
+  /** The account's Gmail send-as aliases (read-only; cached at connect). */
+  getSendAs(email: string): Promise<SendAsAlias[]>;
 
   /** Cached name + photo for a connected account (null in demo mode). */
   getProfile(email: string): Promise<ProfileInfo | null>;
@@ -364,6 +368,9 @@ class TauriBackend implements Backend {
   }
   deleteDraft(draftId: number) {
     return invoke<void>("delete_draft", { draftId });
+  }
+  getSendAs(email: string) {
+    return invoke<SendAsAlias[]>("get_send_as", { email });
   }
   getProfile(email: string) {
     return invoke<ProfileInfo | null>("get_profile", { email });

@@ -207,9 +207,10 @@ async fn start_oauth(
             ),
         );
     }
-    // Fresh grant in hand: pull Google contacts now (no-ops gracefully if the
-    // contacts scopes were unchecked).
+    // Fresh grant in hand: pull Google contacts + send-as aliases now (each
+    // no-ops gracefully if its scope was unchecked).
     spawn_people_sync(app.clone(), accounts.active.clone());
+    spawn_sendas_fetch(app.clone(), accounts.active.clone());
     sync_in_background(app);
     Ok(accounts)
 }
@@ -291,7 +292,7 @@ async fn disconnect_account(
         store::clear_account_mail(&conn, &email)?;
         // Drop the recorded grant + synced Google data: the account is gone
         // (or about to reconnect fresh), so stale state must not linger.
-        for key in ["granted_scopes", "scope_notice_shown", "people_synced"] {
+        for key in ["granted_scopes", "scope_notice_shown", "people_synced", "sendas"] {
             conn.execute("DELETE FROM kv WHERE key = ?1", [format!("{key}:{email}")]).ok();
         }
         conn.execute("DELETE FROM people_contacts WHERE account_id = ?1", [email.as_str()]).ok();
@@ -645,6 +646,97 @@ async fn refresh_contacts(app: AppHandle, state: State<'_, AppState>) -> Result<
         return Err("Connect a Gmail account to sync Google contacts".into());
     }
     people_sync(&app, &active.email).await
+}
+
+// ---------------------------------------------------------------- send-as
+
+/// Fetch the account's Gmail send-as aliases (read-only; gmail.settings.basic)
+/// and persist them to kv `sendas:{email}`.
+async fn sendas_fetch(app: &AppHandle, email: &str) -> Result<Vec<SendAsAlias>, String> {
+    let state = app.state::<AppState>();
+    let granted: Option<String> = {
+        let conn = state.db.lock().unwrap();
+        store::get_json(&conn, &format!("granted_scopes:{email}"))
+    };
+    let ok = granted
+        .as_deref()
+        .map(|g| scope_granted(g, "https://www.googleapis.com/auth/gmail.settings.basic"))
+        .unwrap_or(false);
+    if !ok {
+        return Err("Send-as access wasn't granted — reconnect Gmail in Settings → Account".into());
+    }
+    let v = {
+        let mut sessions = state.gmail.lock().await;
+        let session = sessions
+            .get_mut(email)
+            .ok_or("account not connected — reconnect Gmail")?;
+        session
+            .get_json(
+                &state.http,
+                "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs",
+            )
+            .await
+            .map_err(|e| mail::classify_google_error(&e, "Gmail API", "Send-as"))?
+    };
+    let empty = vec![];
+    let aliases: Vec<SendAsAlias> = v["sendAs"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|a| {
+            let addr = a["sendAsEmail"].as_str()?;
+            let primary = a["isPrimary"].as_bool().unwrap_or(false);
+            Some(SendAsAlias {
+                email: addr.to_string(),
+                display_name: a["displayName"].as_str().unwrap_or("").to_string(),
+                is_default: a["isDefault"].as_bool().unwrap_or(false),
+                verified: primary
+                    || a["verificationStatus"].as_str() == Some("accepted"),
+                has_signature: a["signature"]
+                    .as_str()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false),
+            })
+        })
+        .collect();
+    {
+        let conn = state.db.lock().unwrap();
+        let _ = store::set_json(&conn, &format!("sendas:{email}"), &aliases);
+    }
+    Ok(aliases)
+}
+
+/// Fire-and-forget send-as fetch (connect time).
+fn spawn_sendas_fetch(app: AppHandle, email: String) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = sendas_fetch(&app, &email).await {
+            eprintln!("[sendas:{email}] fetch skipped: {e}");
+        }
+    });
+}
+
+/// The account's send-as aliases: the kv cache, refreshed on demand when
+/// it's empty and the grant allows.
+#[tauri::command]
+async fn get_send_as(app: AppHandle, state: State<'_, AppState>, email: String) -> Result<Vec<SendAsAlias>, String> {
+    let cached: Option<Vec<SendAsAlias>> = {
+        let conn = state.db.lock().unwrap();
+        store::get_json(&conn, &format!("sendas:{email}"))
+    };
+    if let Some(aliases) = cached {
+        return Ok(aliases);
+    }
+    let is_gmail = {
+        let conn = state.db.lock().unwrap();
+        store::get_accounts(&conn)
+            .accounts
+            .iter()
+            .any(|a| a.email == email && a.provider == "gmail")
+    };
+    if !is_gmail {
+        return Ok(vec![]);
+    }
+    sendas_fetch(&app, &email).await.or(Ok(vec![]))
 }
 
 #[tauri::command]
@@ -2591,6 +2683,7 @@ pub fn run() {
             lint_text,
             search_contacts,
             refresh_contacts,
+            get_send_as,
             search_all,
             load_older,
             get_settings,

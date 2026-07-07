@@ -11,6 +11,7 @@ import { SignatureEditor } from "./SignatureEditor";
 import type {
   AiProviderId,
   Capabilities,
+  SendAsAlias,
   Split,
   SplitField,
   SplitOp,
@@ -103,6 +104,44 @@ function ProfilePhoto({ email }: { email: string }) {
         </button>
       )}
     </span>
+  );
+}
+
+/** Read-only send-as aliases (users.settings.sendAs), fetched at connect and
+ *  cached; shown so the user can see what Gmail can send as. The From-alias
+ *  selector in compose is a later step. */
+function SendAsList({ email }: { email: string }) {
+  const [aliases, setAliases] = useState<SendAsAlias[]>([]);
+  useEffect(() => {
+    void backend
+      .getSendAs(email)
+      .then(setAliases)
+      .catch(() => setAliases([]));
+  }, [email]);
+  if (aliases.length <= 1) return null; // just the primary — nothing to show
+  return (
+    <div className="mt-2 rounded-md border border-line bg-raised px-3 py-2">
+      <div className="mb-1 text-[11.5px] font-medium uppercase tracking-wide text-ink-3">
+        Send-as addresses
+      </div>
+      {aliases.map((a) => (
+        <div key={a.email} className="flex items-center gap-2 py-0.5 text-[12.5px]">
+          <span className="text-ink">{a.email}</span>
+          {a.displayName && <span className="text-ink-3">{a.displayName}</span>}
+          {a.isDefault && (
+            <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[10.5px] text-accent-strong">
+              default
+            </span>
+          )}
+          {!a.verified && <span className="text-[11px] text-warn">unverified</span>}
+          {a.hasSignature && (
+            <span className="text-[11px] text-ink-3" title="Has its own Gmail signature">
+              ✎ signature
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -288,6 +327,9 @@ function AccountTab() {
                       {busy ? "Waiting for consent…" : "Reconnect to grant new access"}
                     </button>
                   </div>
+                )}
+                {(a.provider === "gmail" || a.provider === "mock") && (
+                  <SendAsList email={a.email} />
                 )}
                 <div className="mt-2">
                   <SignatureEditor

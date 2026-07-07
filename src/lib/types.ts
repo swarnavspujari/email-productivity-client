@@ -132,6 +132,15 @@ export interface Capabilities {
   legacyGrant: boolean;
 }
 
+/** One Gmail send-as alias (users.settings.sendAs, read-only surface). */
+export interface SendAsAlias {
+  email: string;
+  displayName: string;
+  isDefault: boolean;
+  verified: boolean;
+  hasSignature: boolean;
+}
+
 /** Connected-account profile shown in the header (picture is a data: URI). */
 export interface ProfileInfo {
   name: string;

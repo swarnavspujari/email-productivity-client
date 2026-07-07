@@ -22,6 +22,7 @@ import type {
   OutgoingMail,
   ProfileInfo,
   SearchResult,
+  SendAsAlias,
   Settings,
   Streaks,
   Thread,
@@ -927,6 +928,26 @@ export class MockBackend implements Backend {
   /** Demo mode syncs no real Google contacts — report the fixture count. */
   async refreshContacts(): Promise<number> {
     return MOCK_GOOGLE_CONTACTS.length;
+  }
+
+  /** Fixture send-as aliases so the Settings list is demoable. */
+  async getSendAs(email: string): Promise<SendAsAlias[]> {
+    return [
+      {
+        email,
+        displayName: "You",
+        isDefault: true,
+        verified: true,
+        hasSignature: true,
+      },
+      {
+        email: email.replace("@", "+deals@"),
+        displayName: "Deal Flow",
+        isDefault: false,
+        verified: true,
+        hasSignature: false,
+      },
+    ];
   }
 
   /** Tiny stand-in for Harper: a fixed misspelling list so the demo shows
