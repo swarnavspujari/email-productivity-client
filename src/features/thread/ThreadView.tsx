@@ -6,6 +6,7 @@ import { useUi } from "@/stores/ui";
 import { Avatar } from "@/components/Avatar";
 import { ContactPanel } from "@/components/ContactPanel";
 import { Label } from "@/components/Label";
+import { InviteBar } from "@/features/thread/InviteBar";
 import { ReplyDock } from "@/features/compose/ReplyDock";
 import type { Attachment, Message } from "@/lib/types";
 
@@ -434,6 +435,7 @@ export function ThreadView() {
                 {messages.length} message{messages.length > 1 ? "s" : ""}
               </div>
             </div>
+            <InviteBar threadId={threadId} />
             <div className="space-y-2">
               {messages.map((m, i) => (
                 <MessageCard

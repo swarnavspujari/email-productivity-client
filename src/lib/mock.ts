@@ -11,7 +11,14 @@ import type {
   AccountsState,
   AiProviderId,
   CalendarEvent,
+  CalendarInfo,
   Capabilities,
+  EventAttendee,
+  EventDraft,
+  EventWriteResult,
+  RsvpResponse,
+  SendUpdates,
+  ThreadInvite,
   DraftEntry,
   DraftRequest,
   DriveFile,
@@ -69,6 +76,14 @@ interface PersistedState {
   keys: Partial<Record<AiProviderId, string>>;
   activeAccount: string;
   accountOrder: string[];
+  /** Demo-calendar CRUD overlay: fixtures are synthesized on read, so writes
+   *  land here (created events, per-id field patches, deleted ids). */
+  calendarOverlay: {
+    created: CalendarEvent[];
+    patched: Record<string, Partial<CalendarEvent>>;
+    deleted: string[];
+    seq: number;
+  };
 }
 
 function loadPersisted(): PersistedState {
@@ -85,12 +100,15 @@ function loadPersisted(): PersistedState {
     keys: {},
     activeAccount: DEMO_ACCOUNT,
     accountOrder: [DEMO_ACCOUNT, DEMO_ACCOUNT_2],
+    calendarOverlay: { created: [], patched: {}, deleted: [], seq: 1 },
   };
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const loaded = JSON.parse(raw) as Partial<PersistedState>;
       const merged = { ...fresh, ...loaded };
+      // v0.16: calendar CRUD overlay (older saves lack it)
+      merged.calendarOverlay = { ...fresh.calendarOverlay, ...merged.calendarOverlay };
       // settings gained fields across versions — merge defaults in
       merged.settings = { ...fresh.settings, ...merged.settings };
       merged.settings.shortcuts = {
@@ -695,10 +713,13 @@ export class MockBackend implements Backend {
     this.persist();
   }
 
-  /** Mirror of src-tauri/src/mail/mock.rs demo_events — keep in sync. */
-  async listEvents(startMs: number, endMs: number): Promise<CalendarEvent[]> {
+  /** Mirror of src-tauri/src/mail/mock.rs demo_events — keep in sync. The
+   *  board meeting arrives as an invite (organizer ≠ self, RSVP pending) so
+   *  the popover's RSVP affordances are demoable. */
+  private baseEvents(startMs: number, endMs: number): CalendarEvent[] {
     const H = 3600_000;
     const D = 24 * H;
+    const me = this.state.activeAccount;
     const blocks: Array<[number, number, string, string | null]> = [
       [7, 8, "Workout", null],
       [8.5, 9.75, "Deep work — LP letter", null],
@@ -712,22 +733,312 @@ export class MockBackend implements Backend {
       blocks.forEach(([from, to, title, location], i) => {
         const s = dayStart + from * H;
         const e = dayStart + to * H;
-        if (e > startMs && s < endMs) {
-          events.push({
-            id: `demo-${dayStart}-${i}`,
-            calendar: "Demo",
-            color: null,
-            title,
-            startMs: s,
-            endMs: e,
-            allDay: false,
-            location,
-          });
-        }
+        if (e <= startMs || s >= endMs) return;
+        const invited = i === 2; // Helios Board Meeting
+        const attendees: EventAttendee[] = invited
+          ? [
+              {
+                email: "maya@heliosrobotics.io",
+                displayName: "Maya Okafor",
+                optional: false,
+                responseStatus: "accepted",
+                self: false,
+                organizer: true,
+              },
+              {
+                email: me,
+                displayName: null,
+                optional: false,
+                responseStatus: "needsAction",
+                self: true,
+                organizer: false,
+              },
+            ]
+          : i === 4
+            ? [
+                {
+                  email: me,
+                  displayName: null,
+                  optional: false,
+                  responseStatus: "accepted",
+                  self: true,
+                  organizer: true,
+                },
+                {
+                  email: "lena@fieldstone.bio",
+                  displayName: "Lena Fischer",
+                  optional: false,
+                  responseStatus: "accepted",
+                  self: false,
+                  organizer: false,
+                },
+              ]
+            : [];
+        events.push({
+          id: `demo-${dayStart}-${i}`,
+          calendarId: "demo",
+          calendar: "Demo",
+          color: null,
+          title,
+          startMs: s,
+          endMs: e,
+          allDay: false,
+          location,
+          description: invited
+            ? "Agenda: Q2 financials, Series A close, hiring plan."
+            : null,
+          htmlLink: null,
+          etag: `"demo-${dayStart}-${i}"`,
+          status: "confirmed",
+          organizerEmail: invited ? "maya@heliosrobotics.io" : me,
+          organizerSelf: !invited,
+          recurringEventId: null,
+          hangoutLink: i === 4 ? "https://meet.google.com/demo-fieldstone" : null,
+          attendees,
+          accessRole: "owner",
+          icalUid: `demo-${dayStart}-${i}@fission.local`,
+        });
       });
       dayStart += D;
     }
     return events;
+  }
+
+  /** Fixtures + the CRUD overlay (created / patched / deleted). */
+  async listEvents(startMs: number, endMs: number): Promise<CalendarEvent[]> {
+    const ov = this.state.calendarOverlay;
+    const events = this.baseEvents(startMs, endMs)
+      .filter((e) => !ov.deleted.includes(e.id))
+      .map((e) => (ov.patched[e.id] ? { ...e, ...ov.patched[e.id] } : e))
+      // an event edited AWAY from its fixture day no longer overlaps here
+      .filter((e) => e.startMs < endMs && e.endMs > startMs);
+    // …and one edited INTO this range comes from a day the base synthesis
+    // above never generated — pull patched ids in by their own times.
+    for (const id of Object.keys(ov.patched)) {
+      if (events.some((e) => e.id === id) || ov.deleted.includes(id)) continue;
+      const ev = this.findEvent(id);
+      if (ev && ev.startMs < endMs && ev.endMs > startMs) events.push(ev);
+    }
+    for (const c of ov.created) {
+      if (c.startMs < endMs && c.endMs > startMs) events.push({ ...c });
+    }
+    events.sort((a, b) => a.startMs - b.startMs);
+    return events;
+  }
+
+  /** One event (fixture or created) with its patches applied. Fixture ids
+   *  encode their local-midnight day: demo-{dayStart}-{i}. */
+  private findEvent(eventId: string): CalendarEvent | null {
+    const ov = this.state.calendarOverlay;
+    const created = ov.created.find((e) => e.id === eventId);
+    if (created) return { ...created };
+    if (ov.deleted.includes(eventId)) return null;
+    const m = /^demo-(\d+)-(\d+)$/.exec(eventId);
+    if (!m) return null;
+    const dayStart = Number(m[1]);
+    const base = this.baseEvents(dayStart, dayStart + 24 * 3600_000).find(
+      (e) => e.id === eventId
+    );
+    if (!base) return null;
+    return { ...base, ...(ov.patched[eventId] ?? {}) };
+  }
+
+  private notifyCalendar() {
+    for (const cb of this.calendarListeners) cb(null);
+  }
+
+  private applyEventPatch(eventId: string, patch: Partial<CalendarEvent>) {
+    const ov = this.state.calendarOverlay;
+    const created = ov.created.find((e) => e.id === eventId);
+    if (created) Object.assign(created, patch);
+    else ov.patched[eventId] = { ...ov.patched[eventId], ...patch };
+  }
+
+  private bumpEtag(etag: string | null): string {
+    const n = Number((etag ?? '"0"').replace(/[^0-9]/g, "")) || 0;
+    return `"${n + 1}"`;
+  }
+
+  /** New guest list for a draft; existing guests keep their RSVP state and
+   *  the organizer (you) joins automatically, like Google. */
+  private draftAttendees(
+    draft: EventDraft,
+    existing: CalendarEvent | null
+  ): EventAttendee[] {
+    const me = this.state.activeAccount.toLowerCase();
+    const list = draft.attendees.map((email): EventAttendee => {
+      const known = existing?.attendees.find(
+        (a) => a.email.toLowerCase() === email.toLowerCase()
+      );
+      if (known) return known;
+      const self = email.toLowerCase() === me;
+      return {
+        email,
+        displayName: null,
+        optional: false,
+        responseStatus: self ? "accepted" : "needsAction",
+        self,
+        organizer: false,
+      };
+    });
+    if (list.length > 0 && !list.some((a) => a.self)) {
+      list.unshift({
+        email: me,
+        displayName: null,
+        optional: false,
+        responseStatus: "accepted",
+        self: true,
+        organizer: existing ? existing.organizerSelf : true,
+      });
+    }
+    return list;
+  }
+
+  async listCalendars(): Promise<CalendarInfo[]> {
+    return [
+      { id: "demo", name: "Demo", color: null, accessRole: "owner", primary: true },
+    ];
+  }
+
+  async createEvent(
+    draft: EventDraft,
+    _sendUpdates: SendUpdates
+  ): Promise<CalendarEvent> {
+    const ov = this.state.calendarOverlay;
+    const id = `demo-created-${ov.seq++}`;
+    const me = this.state.activeAccount;
+    const ev: CalendarEvent = {
+      id,
+      calendarId: draft.calendarId || "demo",
+      calendar: "Demo",
+      color: null,
+      title: draft.title,
+      startMs: draft.startMs,
+      endMs: draft.endMs,
+      allDay: draft.allDay,
+      location: draft.location,
+      description: draft.description,
+      htmlLink: null,
+      etag: '"1"',
+      status: "confirmed",
+      organizerEmail: me,
+      organizerSelf: true,
+      recurringEventId: null,
+      hangoutLink: null,
+      attendees: this.draftAttendees(draft, null),
+      accessRole: "owner",
+      icalUid: `${id}@fission.local`,
+    };
+    ov.created.push(ev);
+    this.persist();
+    this.notifyCalendar();
+    return ev;
+  }
+
+  async updateEvent(
+    _calendarId: string,
+    eventId: string,
+    etag: string | null,
+    draft: EventDraft,
+    _sendUpdates: SendUpdates
+  ): Promise<EventWriteResult> {
+    const current = this.findEvent(eventId);
+    if (!current) throw new Error("event not found");
+    if (etag && current.etag && etag !== current.etag) {
+      return { status: "conflict", event: current };
+    }
+    this.applyEventPatch(eventId, {
+      title: draft.title,
+      startMs: draft.startMs,
+      endMs: draft.endMs,
+      allDay: draft.allDay,
+      location: draft.location,
+      description: draft.description,
+      attendees: this.draftAttendees(draft, current),
+      etag: this.bumpEtag(current.etag),
+    });
+    this.persist();
+    this.notifyCalendar();
+    return { status: "ok", event: this.findEvent(eventId) };
+  }
+
+  async deleteEvent(
+    _calendarId: string,
+    eventId: string,
+    etag: string | null,
+    _sendUpdates: SendUpdates
+  ): Promise<EventWriteResult> {
+    const current = this.findEvent(eventId);
+    if (!current) return { status: "ok", event: null }; // already gone
+    if (etag && current.etag && etag !== current.etag) {
+      return { status: "conflict", event: current };
+    }
+    const ov = this.state.calendarOverlay;
+    ov.created = ov.created.filter((e) => e.id !== eventId);
+    if (/^demo-\d+-\d+$/.test(eventId)) ov.deleted.push(eventId);
+    delete ov.patched[eventId];
+    this.persist();
+    this.notifyCalendar();
+    return { status: "ok", event: null };
+  }
+
+  /** Mirror of the desktop demo's invite fixtures (mock.rs demo_ics): the
+   *  board-meeting thread resolves to that day's fixture event, the dinner
+   *  deliberately doesn't — exercising the open-in-Google-Calendar fallback. */
+  async threadInvite(threadId: ThreadId): Promise<ThreadInvite | null> {
+    if (threadId === "t-cal-board") {
+      const day = new Date(2026, 6, 9).getTime(); // Thu Jul 9, 2026 local
+      const event = this.findEvent(`demo-${day}-2`);
+      return {
+        method: "REQUEST",
+        uid: `demo-${day}-2@fission.local`,
+        summary: "Helios Robotics Board Meeting",
+        organizerEmail: "maya@heliosrobotics.io",
+        startMs: day + 10 * 3600_000,
+        endMs: day + 11.5 * 3600_000,
+        allDay: false,
+        openUrl: null,
+        event,
+      };
+    }
+    if (threadId === "t-cal-dinner") {
+      const day = new Date(2026, 6, 15).getTime();
+      return {
+        method: "REQUEST",
+        uid: "saastrix-founders-dinner-2026@saastrix.com",
+        summary: "Founders' Dinner — SF",
+        organizerEmail: "events@saastrix.com",
+        startMs: day + 19 * 3600_000,
+        endMs: day + 22 * 3600_000,
+        allDay: false,
+        openUrl: "https://calendar.google.com/",
+        event: null,
+      };
+    }
+    return null;
+  }
+
+  async rsvpEvent(
+    _calendarId: string,
+    eventId: string,
+    response: RsvpResponse
+  ): Promise<CalendarEvent> {
+    const current = this.findEvent(eventId);
+    if (!current) throw new Error("event not found");
+    if (!current.attendees.some((a) => a.self)) {
+      throw new Error("You're not on this event's guest list");
+    }
+    this.applyEventPatch(eventId, {
+      attendees: current.attendees.map((a) =>
+        a.self ? { ...a, responseStatus: response } : a
+      ),
+      etag: this.bumpEtag(current.etag),
+    });
+    this.persist();
+    this.notifyCalendar();
+    const updated = this.findEvent(eventId);
+    if (!updated) throw new Error("event not found");
+    return updated;
   }
 
   async getSettings() {

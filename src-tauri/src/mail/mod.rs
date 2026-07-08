@@ -1,6 +1,7 @@
 pub mod calendar;
 pub mod drive;
 pub mod gmail;
+pub mod ics;
 pub mod mock;
 pub mod oauth;
 pub mod people;

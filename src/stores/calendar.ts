@@ -1,9 +1,10 @@
 // Shared, day-keyed event cache so the panel and week view paint instantly
 // on reopen/navigation. Reads are local (SQLite / demo fixtures); freshness
-// arrives via refreshCalendar + the calendar:updated event.
+// arrives via refreshCalendar + the calendar:updated event. Event modal +
+// popover state lives here too (they belong to the calendar views).
 import { create } from "zustand";
 import { backend } from "@/lib/ipc";
-import type { CalendarEvent } from "@/lib/types";
+import type { CalendarEvent, CalendarInfo } from "@/lib/types";
 
 export const DAY_MS = 24 * 3600_000;
 
@@ -11,6 +12,24 @@ export function startOfToday(): number {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d.getTime();
+}
+
+/** The create/edit event modal. */
+export interface EventModalState {
+  mode: "create" | "edit";
+  /** Edit target (carries id/etag/calendarId + guest context); null = create. */
+  event: CalendarEvent | null;
+  /** Prefill for create (from a clicked/dragged slot or "New event"). */
+  startMs: number;
+  endMs: number;
+  allDay: boolean;
+}
+
+/** The event-details popover, anchored at the click point. */
+export interface EventPopoverState {
+  event: CalendarEvent;
+  x: number;
+  y: number;
 }
 
 interface CalendarState {
@@ -24,6 +43,10 @@ interface CalendarState {
   /** The range views are currently showing, revalidated on updates. */
   activeStart: number;
   activeDays: number;
+  /** The account's calendars (modal selector; owner/writer = writable). */
+  calendars: CalendarInfo[];
+  modal: EventModalState | null;
+  popover: EventPopoverState | null;
 
   shiftDay: (delta: number) => void;
   goToday: () => void;
@@ -33,6 +56,13 @@ interface CalendarState {
   requestRefresh: () => void;
   /** calendar:updated landed — re-read the active range / surface errors. */
   handleUpdated: (error: string | null) => void;
+  /** Refresh the calendarList for the modal's selector. */
+  loadCalendars: () => Promise<void>;
+  openCreate: (startMs: number, endMs: number, allDay?: boolean) => void;
+  openEdit: (event: CalendarEvent) => void;
+  closeModal: () => void;
+  openPopover: (event: CalendarEvent, x: number, y: number) => void;
+  closePopover: () => void;
 }
 
 export const useCalendar = create<CalendarState>((set, get) => ({
@@ -42,6 +72,9 @@ export const useCalendar = create<CalendarState>((set, get) => ({
   dayOffset: 0,
   activeStart: startOfToday(),
   activeDays: 1,
+  calendars: [],
+  modal: null,
+  popover: null,
 
   shiftDay: (delta) => set((s) => ({ dayOffset: s.dayOffset + delta })),
   goToday: () => set({ dayOffset: 0 }),
@@ -82,4 +115,38 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     const s = get();
     void s.loadRange(s.activeStart, s.activeDays);
   },
+
+  loadCalendars: async () => {
+    try {
+      set({ calendars: await backend.listCalendars() });
+    } catch {
+      // selector falls back to the event's own calendar
+    }
+  },
+
+  openCreate: (startMs, endMs, allDay = false) => {
+    void get().loadCalendars();
+    set({
+      popover: null,
+      modal: { mode: "create", event: null, startMs, endMs, allDay },
+    });
+  },
+
+  openEdit: (event) => {
+    void get().loadCalendars();
+    set({
+      popover: null,
+      modal: {
+        mode: "edit",
+        event,
+        startMs: event.startMs,
+        endMs: event.endMs,
+        allDay: event.allDay,
+      },
+    });
+  },
+
+  closeModal: () => set({ modal: null }),
+  openPopover: (event, x, y) => set({ popover: { event, x, y } }),
+  closePopover: () => set({ popover: null }),
 }));

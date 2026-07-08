@@ -8,7 +8,9 @@ const H: i64 = 3_600_000;
 const D: i64 = 24 * H;
 
 /// Fixture events for the calendar side panel in demo mode: a plausible
-/// founder's day, repeated for every day in the requested range.
+/// founder's day, repeated for every day in the requested range. The board
+/// meeting arrives as an invite (organizer ≠ self, RSVP pending) so the
+/// popover's RSVP affordances are demoable; everything else is self-owned.
 pub fn demo_events(start_ms: i64, end_ms: i64) -> Vec<CalendarEvent> {
     let day_blocks: [(f64, f64, &str, Option<&str>); 5] = [
         (7.0, 8.0, "Workout", None),
@@ -17,6 +19,7 @@ pub fn demo_events(start_ms: i64, end_ms: i64) -> Vec<CalendarEvent> {
         (12.5, 13.25, "Lunch", None),
         (14.0, 14.75, "Fieldstone intro call", Some("Meet")),
     ];
+    let me = store::DEMO_ACCOUNT;
     let mut events = vec![];
     // walk local midnights across the range
     let mut day_start = {
@@ -32,22 +35,129 @@ pub fn demo_events(start_ms: i64, end_ms: i64) -> Vec<CalendarEvent> {
         for (i, (from_h, to_h, title, location)) in day_blocks.iter().enumerate() {
             let s = day_start + (from_h * H as f64) as i64;
             let e = day_start + (to_h * H as f64) as i64;
-            if e > start_ms && s < end_ms {
-                events.push(CalendarEvent {
-                    id: format!("demo-{day_start}-{i}"),
-                    calendar: "Demo".into(),
-                    color: None,
-                    title: (*title).into(),
-                    start_ms: s,
-                    end_ms: e,
-                    all_day: false,
-                    location: location.map(str::to_string),
-                });
+            if !(e > start_ms && s < end_ms) {
+                continue;
             }
+            let invited = i == 2; // Helios Board Meeting
+            let attendees = if invited {
+                vec![
+                    EventAttendee {
+                        email: "maya@heliosrobotics.io".into(),
+                        display_name: Some("Maya Okafor".into()),
+                        optional: false,
+                        response_status: "accepted".into(),
+                        self_: false,
+                        organizer: true,
+                    },
+                    EventAttendee {
+                        email: me.into(),
+                        display_name: None,
+                        optional: false,
+                        response_status: "needsAction".into(),
+                        self_: true,
+                        organizer: false,
+                    },
+                ]
+            } else if i == 4 {
+                // Fieldstone intro call — self-organized with a guest
+                vec![
+                    EventAttendee {
+                        email: me.into(),
+                        display_name: None,
+                        optional: false,
+                        response_status: "accepted".into(),
+                        self_: true,
+                        organizer: true,
+                    },
+                    EventAttendee {
+                        email: "lena@fieldstone.bio".into(),
+                        display_name: Some("Lena Fischer".into()),
+                        optional: false,
+                        response_status: "accepted".into(),
+                        self_: false,
+                        organizer: false,
+                    },
+                ]
+            } else {
+                vec![]
+            };
+            events.push(CalendarEvent {
+                id: format!("demo-{day_start}-{i}"),
+                calendar_id: "demo".into(),
+                calendar: "Demo".into(),
+                color: None,
+                title: (*title).into(),
+                start_ms: s,
+                end_ms: e,
+                all_day: false,
+                location: location.map(str::to_string),
+                description: invited
+                    .then(|| "Agenda: Q2 financials, Series A close, hiring plan.".to_string()),
+                html_link: None,
+                etag: Some(format!("\"demo-{day_start}-{i}\"")),
+                status: "confirmed".into(),
+                organizer_email: Some(if invited { "maya@heliosrobotics.io".into() } else { me.to_string() }),
+                organizer_self: !invited,
+                recurring_event_id: None,
+                hangout_link: (i == 4).then(|| "https://meet.google.com/demo-fieldstone".to_string()),
+                attendees,
+                access_role: "owner".into(),
+                ical_uid: Some(format!("demo-{day_start}-{i}@fission.local")),
+            });
         }
         day_start += D;
     }
     events
+}
+
+/// Local midnight (ms) of a fixture calendar date.
+fn demo_day_ms(y: i32, m: u32, d: u32) -> i64 {
+    chrono::NaiveDate::from_ymd_opt(y, m, d)
+        .and_then(|date| date.and_hms_opt(0, 0, 0))
+        .and_then(|t| t.and_local_timezone(chrono::Local).single())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(0)
+}
+
+/// ICS payloads for the demo invitation threads, so the RSVP bar is demoable
+/// offline. The board meeting's UID matches that day's fixture event
+/// (demo_events block #2), the dinner deliberately matches nothing — that
+/// exercises the "Open in Google Calendar" fallback.
+fn demo_ics(thread_id: &str) -> Option<String> {
+    match thread_id {
+        "t-cal-board" => {
+            let day = demo_day_ms(2026, 7, 9);
+            Some(format!(
+                "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:demo-{day}-2@fission.local\r\nSUMMARY:Helios Robotics Board Meeting\r\nORGANIZER;CN=Maya Okafor:mailto:maya@heliosrobotics.io\r\nDTSTART:20260709T100000\r\nDTEND:20260709T113000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            ))
+        }
+        "t-cal-dinner" => Some(
+            "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:saastrix-founders-dinner-2026@saastrix.com\r\nSUMMARY:Founders' Dinner — SF\r\nORGANIZER:mailto:events@saastrix.com\r\nDTSTART:20260715T190000\r\nDTEND:20260715T220000\r\nURL:https://calendar.google.com/\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// Demo DBs seeded before v0.16 predate the ics_data column: seed_if_empty
+/// skips populated stores, so patch the two invitation fixtures in place.
+pub fn heal_demo_ics(conn: &Connection) {
+    for thread_id in ["t-cal-board", "t-cal-dinner"] {
+        if let Some(ics) = demo_ics(thread_id) {
+            let _ = conn.execute(
+                "UPDATE messages SET ics_data = ?2 WHERE id = ?1 AND ics_data IS NULL",
+                rusqlite::params![format!("{thread_id}-m1"), ics],
+            );
+        }
+    }
+}
+
+/// Resolve a fixture event by its iCalendar UID (demo-{dayStart}-{i}@…).
+pub fn demo_event_by_uid(uid: &str) -> Option<CalendarEvent> {
+    let core = uid.strip_suffix("@fission.local")?;
+    let mut parts = core.strip_prefix("demo-")?.splitn(2, '-');
+    let day: i64 = parts.next()?.parse().ok()?;
+    demo_events(day, day + D).into_iter().find(|e| e.ical_uid.as_deref() == Some(uid))
 }
 
 struct SeedMsg {
@@ -464,6 +574,7 @@ pub fn seed_if_empty(conn: &Connection) -> Result<(), String> {
             } else {
                 None
             };
+            let ics = demo_ics(s.id);
             msgs.push((
                 Message {
                     id: mid.clone(),
@@ -482,6 +593,7 @@ pub fn seed_if_empty(conn: &Connection) -> Result<(), String> {
                 },
                 None,
                 unsub,
+                ics,
                 atts,
             ));
         }

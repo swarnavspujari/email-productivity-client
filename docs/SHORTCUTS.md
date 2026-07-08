@@ -64,6 +64,7 @@ Aligned with **Superhuman (current Windows edition)**. `mod` = `Ctrl` on Windows
 | `0` | Toggle the day panel beside the inbox (Superhuman "Open Day") |
 | `2` (or `G` then `C`) | Open the week view (`Esc` returns to mail) |
 | `←`/`→` or `-`/`=` | Previous / next day — when the calendar has focus (the week view, or the day panel after opening/clicking it; clicking back into the list releases the keys) |
+| `B` | New event — opens the create modal (guests, location, notify-on-save); clicking or dragging an empty slot does the same with the times prefilled |
 
 ## Compose
 
@@ -238,7 +239,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 | Open Week | `2` | ✅ | `G`,`C` too (v0.14) |
 | Previous / Next Day/Week | `-` / `=` | ✅ | while the calendar is focused; `←`/`→` too (v0.14) |
 | Share Availability | `Ctrl+Shift+A` | 🔜 | |
-| Create Event | `B` | 🔜 | calendar is read-only today |
+| Create Event | `B` | ✅ | full modal: guests (contact autocomplete), calendar picker, notify-guests prompt (v0.16) |
 | Create Empty Event | `Shift+B` | 🔜 | |
 
 ## Filters — all 🔜 (list filters)

@@ -305,10 +305,17 @@ async fn disconnect_account(
             "people_synced",
             "sendas",
             "drive_folder",
+            "cal_synced_at",
+            "cal_range",
         ] {
             conn.execute("DELETE FROM kv WHERE key = ?1", [format!("{key}:{email}")]).ok();
         }
         conn.execute("DELETE FROM people_contacts WHERE account_id = ?1", [email.as_str()]).ok();
+        // calendar cache + per-calendar syncTokens: a reconnect must start
+        // from a clean initial fetch, not a stale token from the old grant
+        conn.execute("DELETE FROM events WHERE account_id = ?1", [email.as_str()]).ok();
+        conn.execute("DELETE FROM kv WHERE key LIKE ?1", [format!("cal_sync:{email}:%")]).ok();
+        conn.execute("DELETE FROM kv WHERE key LIKE ?1", [format!("cal_anchor:{email}:%")]).ok();
         let mut accounts = store::get_accounts(&conn);
         accounts.accounts.retain(|a| a.email != email);
         if accounts.accounts.is_empty() {
@@ -384,32 +391,225 @@ fn list_events(
     let conn = state.db.lock().unwrap();
     let active = store::active_account(&conn);
     if active.provider != "gmail" {
-        return Ok(mail::mock::demo_events(start_ms, end_ms));
+        let mut events = mail::mock::demo_events(start_ms, end_ms);
+        apply_demo_rsvps(&conn, &mut events);
+        return Ok(events);
     }
     Ok(store::list_events(&conn, &active.email, start_ms, end_ms))
 }
 
-/// Fire-and-forget background refresh of one account's cached events for a
-/// window. On completion (or failure) emits `calendar:updated` with an
-/// optional error message so open panels repaint / surface guidance.
-fn spawn_calendar_refresh(app: AppHandle, email: String, start_ms: i64, end_ms: i64) {
+/// Demo mode synthesizes events on read, so RSVPs record into a kv overlay
+/// (uid → response) that this re-applies — the desktop demo's RSVP bar and
+/// popover stay coherent without a real backend.
+fn apply_demo_rsvps(conn: &rusqlite::Connection, events: &mut [CalendarEvent]) {
+    let overlay: std::collections::HashMap<String, String> =
+        store::get_json(conn, "demo_rsvp").unwrap_or_default();
+    if overlay.is_empty() {
+        return;
+    }
+    for e in events.iter_mut() {
+        let Some(resp) = e.ical_uid.as_ref().and_then(|u| overlay.get(u)) else { continue };
+        for a in e.attendees.iter_mut() {
+            if a.self_ {
+                a.response_status = resp.clone();
+            }
+        }
+    }
+}
+
+/// The window an initial (or 410-recovery) calendar fetch covers. A Google
+/// syncToken permanently encodes its initial request's time bounds, so
+/// increments only ever report changes INSIDE this window — the anchor below
+/// rolls the window forward monthly, and out-of-window navigation triggers a
+/// one-off range fetch (see refresh_calendar).
+const CAL_WINDOW_PAST: i64 = 30 * DAY_MS;
+const CAL_WINDOW_FUTURE: i64 = 365 * DAY_MS;
+/// Re-window this often so the fixed horizon keeps up with the passage of time.
+const CAL_REANCHOR_AFTER: i64 = 30 * DAY_MS;
+
+fn cal_sync_key(email: &str, calendar_id: &str) -> String {
+    format!("cal_sync:{email}:{calendar_id}")
+}
+
+fn cal_anchor_key(email: &str, calendar_id: &str) -> String {
+    format!("cal_anchor:{email}:{calendar_id}")
+}
+
+/// Initial/recovery fetch for one calendar: windowed full listing replaces
+/// the cached rows and the captured nextSyncToken makes later pulls
+/// incremental. `clear_all` (410 recovery) drops the calendar's rows outside
+/// the window too — deletions that happened during the token gap would
+/// otherwise linger as zombies forever.
+async fn calendar_full_refetch(
+    app: &AppHandle,
+    email: &str,
+    cal: &mail::calendar::CalMeta,
+    bearer: &str,
+    clear_all: bool,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let now = now_ms();
+    let (win_start, win_end) = (now - CAL_WINDOW_PAST, now + CAL_WINDOW_FUTURE);
+    let (events, next_token) =
+        mail::calendar::fetch_window(&state.http, bearer, cal, win_start, win_end).await?;
+    let conn = state.db.lock().unwrap();
+    let (clear_start, clear_end) =
+        if clear_all { (i64::MIN / 4, i64::MAX / 4) } else { (win_start, win_end) };
+    store::replace_calendar_window(&conn, email, &cal.id, clear_start, clear_end, &events)?;
+    store::set_json(&conn, &cal_anchor_key(email, &cal.id), &now)?;
+    match next_token {
+        Some(t) => store::set_json(&conn, &cal_sync_key(email, &cal.id), &t)?,
+        // No token (page-cap overflow or a truncated listing) → stay
+        // windowed-only; the next beat retries the initial fetch.
+        None => {
+            conn.execute("DELETE FROM kv WHERE key = ?1", [cal_sync_key(email, &cal.id)])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Sync one calendar: incremental when a syncToken is stored (410 → drop the
+/// token and window-refetch), initial windowed fetch otherwise.
+async fn sync_one_calendar(
+    app: &AppHandle,
+    email: &str,
+    cal: &mail::calendar::CalMeta,
+    bearer: &str,
+) -> Result<(), String> {
+    use mail::calendar::SyncError;
+    let state = app.state::<AppState>();
+    let key = cal_sync_key(email, &cal.id);
+    let (token, anchor): (Option<String>, Option<i64>) = {
+        let conn = state.db.lock().unwrap();
+        (store::get_json(&conn, &key), store::get_json(&conn, &cal_anchor_key(email, &cal.id)))
+    };
+    // The syncToken's window is pinned to its initial fetch; roll it forward
+    // monthly so the -30d..+365d horizon tracks the present.
+    let stale_window = anchor.map(|at| now_ms() - at > CAL_REANCHOR_AFTER).unwrap_or(true);
+    let Some(token) = token.filter(|_| !stale_window) else {
+        return calendar_full_refetch(app, email, cal, bearer, true).await;
+    };
+    match mail::calendar::sync_incremental(&state.http, bearer, cal, &token).await {
+        Ok(delta) => {
+            // One transaction: a large delta as per-row autocommits would hold
+            // the global DB mutex across thousands of fsyncs (frozen IPC).
+            let conn = state.db.lock().unwrap();
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            for e in &delta.upserts {
+                store::upsert_event(&tx, email, e)?;
+            }
+            for id in &delta.deleted_ids {
+                store::delete_event(&tx, email, &cal.id, id)?;
+            }
+            store::set_json(&tx, &key, &delta.next_sync_token)?;
+            tx.commit().map_err(|e| e.to_string())
+        }
+        Err(SyncError::TokenExpired) => {
+            {
+                let conn = state.db.lock().unwrap();
+                conn.execute("DELETE FROM kv WHERE key = ?1", [key.as_str()])
+                    .map_err(|e| e.to_string())?;
+            }
+            calendar_full_refetch(app, email, cal, bearer, true).await
+        }
+        Err(SyncError::Other(e)) => Err(e),
+    }
+}
+
+/// One account's calendar sync pass: calendarList (names/colors/accessRole),
+/// prune calendars that vanished, then sync every calendar concurrently.
+/// Per-calendar failures don't blank the rest — an error surfaces only when
+/// nothing synced.
+async fn calendar_sync(app: &AppHandle, email: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let (bearer, calendars) = {
+        let mut sessions = state.gmail.lock().await;
+        let Some(session) = sessions.get_mut(email) else {
+            return Err("account not connected".into());
+        };
+        let calendars = mail::calendar::list_calendars(&state.http, session).await?;
+        let bearer = session.bearer(&state.http).await?;
+        (bearer, calendars)
+    };
+    {
+        let conn = state.db.lock().unwrap();
+        let ids: Vec<String> = calendars.iter().map(|c| c.id.clone()).collect();
+        store::retain_calendars(&conn, email, &ids)?;
+        // Drop syncTokens/anchors for calendars gone from the list too — a
+        // calendar re-selected later must do a fresh initial fetch, not
+        // resume an old token against its now-empty cache.
+        for prefix in ["cal_sync", "cal_anchor"] {
+            let pat = format!("{prefix}:{email}:%");
+            let stale: Vec<String> = conn
+                .prepare("SELECT key FROM kv WHERE key LIKE ?1")
+                .and_then(|mut st| {
+                    st.query_map([pat.as_str()], |r| r.get::<_, String>(0))
+                        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                })
+                .unwrap_or_default();
+            let head = format!("{prefix}:{email}:");
+            for key in stale {
+                let cal_id = &key[head.len()..];
+                if !ids.iter().any(|id| id == cal_id) {
+                    let _ = conn.execute("DELETE FROM kv WHERE key = ?1", [key.as_str()]);
+                }
+            }
+        }
+    }
+    let handles: Vec<_> = calendars
+        .into_iter()
+        .map(|cal| {
+            let app = app.clone();
+            let email = email.to_string();
+            let bearer = bearer.clone();
+            tauri::async_runtime::spawn(async move {
+                sync_one_calendar(&app, &email, &cal, &bearer)
+                    .await
+                    .map_err(|e| (cal.name, e))
+            })
+        })
+        .collect();
+    let (mut synced, mut first_err) = (0usize, None);
+    for h in handles {
+        match h.await {
+            Ok(Ok(())) => synced += 1,
+            Ok(Err((name, e))) => {
+                eprintln!("[calendar:{email}] {name}: {e}");
+                first_err.get_or_insert(e);
+            }
+            Err(e) => {
+                first_err.get_or_insert(e.to_string());
+            }
+        }
+    }
+    match first_err {
+        Some(e) if synced == 0 => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Fire-and-forget calendar sync for one account; emits `calendar:updated`
+/// with an optional error so open panels repaint / surface guidance. Unforced
+/// runs are throttled to one pass a minute (incremental pulls are cheap, but
+/// the UI calls this on every panel/day/focus change).
+fn spawn_calendar_sync(app: AppHandle, email: String, force: bool) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let result = {
-            let mut sessions = state.gmail.lock().await;
-            let Some(session) = sessions.get_mut(&email) else { return };
-            mail::calendar::list_events(&state.http, session, start_ms, end_ms).await
-        };
-        match result {
-            Ok(events) => {
+        let throttle_key = format!("cal_synced_at:{email}");
+        if !force {
+            let conn = state.db.lock().unwrap();
+            if let Some(at) = store::get_json::<i64>(&conn, &throttle_key) {
+                if now_ms() - at < 60_000 {
+                    return;
+                }
+            }
+        }
+        match calendar_sync(&app, &email).await {
+            Ok(()) => {
                 {
                     let conn = state.db.lock().unwrap();
-                    let _ = store::replace_events(&conn, &email, start_ms, end_ms, &events);
-                    let _ = store::set_json(
-                        &conn,
-                        &format!("cal_window:{email}"),
-                        &serde_json::json!({ "start": start_ms, "end": end_ms, "at": now_ms() }),
-                    );
+                    let _ = store::set_json(&conn, &throttle_key, &now_ms());
                 }
                 let _ = app.emit("calendar:updated", Option::<String>::None);
             }
@@ -420,8 +620,63 @@ fn spawn_calendar_refresh(app: AppHandle, email: String, start_ms: i64, end_ms: 
     });
 }
 
-/// Ask for fresh events around a range. Throttled: if the last fetch already
-/// covers the range and is under two minutes old, the cache stands.
+/// One-off fetch of an out-of-window range (day/week navigation beyond the
+/// synced -30d..+365d): pull just that range for every calendar and cache it.
+/// No token capture — the sync engine's own window is untouched. Throttled
+/// via a coverage bookmark like the pre-v0.16 refresh.
+fn spawn_calendar_range_fetch(app: AppHandle, email: String, start_ms: i64, end_ms: i64) {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let key = format!("cal_range:{email}");
+        {
+            let conn = state.db.lock().unwrap();
+            if let Some(w) = store::get_json::<serde_json::Value>(&conn, &key) {
+                let covered = w["start"].as_i64().unwrap_or(i64::MAX) <= start_ms
+                    && w["end"].as_i64().unwrap_or(0) >= end_ms;
+                let fresh = now_ms() - w["at"].as_i64().unwrap_or(0) < 120_000;
+                if covered && fresh {
+                    return;
+                }
+            }
+        }
+        // widen so day-by-day stepping stays inside one fetched range
+        let (fetch_start, fetch_end) = (start_ms - 7 * DAY_MS, end_ms + 7 * DAY_MS);
+        let (bearer, calendars) = {
+            let mut sessions = state.gmail.lock().await;
+            let Some(session) = sessions.get_mut(&email) else { return };
+            let Ok(calendars) = mail::calendar::list_calendars(&state.http, session).await else {
+                return;
+            };
+            let Ok(bearer) = session.bearer(&state.http).await else { return };
+            (bearer, calendars)
+        };
+        for cal in &calendars {
+            if let Ok((events, _)) =
+                mail::calendar::fetch_window(&state.http, &bearer, cal, fetch_start, fetch_end)
+                    .await
+            {
+                let conn = state.db.lock().unwrap();
+                let _ = store::replace_calendar_window(
+                    &conn, &email, &cal.id, fetch_start, fetch_end, &events,
+                );
+            }
+        }
+        {
+            let conn = state.db.lock().unwrap();
+            let _ = store::set_json(
+                &conn,
+                &key,
+                &serde_json::json!({ "start": fetch_start, "end": fetch_end, "at": now_ms() }),
+            );
+        }
+        let _ = app.emit("calendar:updated", Option::<String>::None);
+    });
+}
+
+/// Ask for fresh events around a range (the UI fires this on panel open,
+/// day/week navigation, and window focus). Inside the synced window this is
+/// an incremental sync pass; outside it, a one-off range fetch backfills the
+/// navigated dates like the pre-v0.16 windowed refresh did.
 #[tauri::command]
 fn refresh_calendar(
     app: AppHandle,
@@ -439,24 +694,404 @@ fn refresh_calendar(
     if active.provider != "gmail" {
         return Ok(()); // demo events are synthesized on read
     }
-    // widen the fetch so day-by-day navigation stays inside one cached window
-    let fetch_start = start_ms - 3 * DAY_MS;
-    let fetch_end = end_ms.max(start_ms + 11 * DAY_MS);
+    let now = now_ms();
+    if start_ms < now - CAL_WINDOW_PAST || end_ms > now + CAL_WINDOW_FUTURE {
+        spawn_calendar_range_fetch(app, active.email, start_ms, end_ms);
+    } else {
+        spawn_calendar_sync(app, active.email, false);
+    }
+    Ok(())
+}
+
+/// The active account's Gmail address, or a calendar-flavored nudge.
+fn active_gmail_cal(state: &State<'_, AppState>) -> Result<String, String> {
+    let active = {
+        let conn = state.db.lock().unwrap();
+        store::active_account(&conn)
+    };
+    if active.provider != "gmail" {
+        return Err("Connect a Gmail account to edit Google Calendar events".into());
+    }
+    Ok(active.email)
+}
+
+/// Resolve one calendar's metadata + a bearer for direct write calls.
+async fn resolve_calendar(
+    state: &State<'_, AppState>,
+    email: &str,
+    calendar_id: &str,
+) -> Result<(String, mail::calendar::CalMeta), String> {
+    let mut sessions = state.gmail.lock().await;
+    let session = sessions.get_mut(email).ok_or("account not connected — reconnect Gmail")?;
+    let calendars = mail::calendar::list_calendars(&state.http, session).await?;
+    let cal = calendars
+        .into_iter()
+        .find(|c| c.id == calendar_id)
+        .ok_or("calendar not found — it may have been removed from your Google account")?;
+    let bearer = session.bearer(&state.http).await?;
+    Ok((bearer, cal))
+}
+
+fn validate_event_draft(draft: &EventDraft) -> Result<(), String> {
+    if draft.title.trim().is_empty() {
+        return Err("Give the event a title".into());
+    }
+    if draft.title.len() > 1024 || draft.description.as_deref().unwrap_or("").len() > 8192 {
+        return Err("Event text is too long".into());
+    }
+    if draft.end_ms <= draft.start_ms {
+        return Err("The event must end after it starts".into());
+    }
+    if draft.attendees.len() > 100 {
+        return Err("Too many guests (max 100)".into());
+    }
+    for a in &draft.attendees {
+        if !a.contains('@') || a.len() > 254 {
+            return Err(format!("\"{a}\" doesn't look like an email address"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_send_updates(send_updates: &str) -> Result<(), String> {
+    match send_updates {
+        "all" | "none" => Ok(()),
+        _ => Err("invalid sendUpdates value".into()),
+    }
+}
+
+/// The account's calendars for the event modal's selector (accessRole tells
+/// the UI which are writable). Demo accounts get the fixture calendar.
+#[tauri::command]
+async fn list_calendars(state: State<'_, AppState>) -> Result<Vec<CalendarInfo>, String> {
+    let active = {
+        let conn = state.db.lock().unwrap();
+        store::active_account(&conn)
+    };
+    if active.provider != "gmail" {
+        return Ok(vec![CalendarInfo {
+            id: "demo".into(),
+            name: "Demo".into(),
+            color: None,
+            access_role: "owner".into(),
+            primary: true,
+        }]);
+    }
+    let mut sessions = state.gmail.lock().await;
+    let session = sessions
+        .get_mut(&active.email)
+        .ok_or("account not connected — reconnect Gmail")?;
+    let calendars = mail::calendar::list_calendars(&state.http, session).await?;
+    Ok(calendars
+        .into_iter()
+        .map(|c| CalendarInfo {
+            id: c.id,
+            name: c.name,
+            color: c.color,
+            access_role: c.access_role,
+            primary: c.primary,
+        })
+        .collect())
+}
+
+/// Create an event (direct Google call, online-required). The saved copy is
+/// upserted locally and an incremental sync follows, so every view converges.
+#[tauri::command]
+async fn create_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    draft: EventDraft,
+    send_updates: String,
+) -> Result<CalendarEvent, String> {
+    validate_event_draft(&draft)?;
+    validate_send_updates(&send_updates)?;
+    let email = active_gmail_cal(&state)?;
+    let (bearer, cal) = resolve_calendar(&state, &email, &draft.calendar_id).await?;
+    if !matches!(cal.access_role.as_str(), "owner" | "writer") {
+        return Err("You don't have edit access to that calendar".into());
+    }
+    let body = mail::calendar::event_body(&draft, None);
+    let ev = mail::calendar::insert_event(&state.http, &bearer, &cal, &body, &send_updates).await?;
+    match finish_event_write(app, &state, &email, mail::calendar::WriteOutcome::Saved(ev))? {
+        EventWriteResult { event: Some(ev), .. } => Ok(ev),
+        _ => Err("create did not return the event".into()),
+    }
+}
+
+/// Update an event with If-Match on its etag; a 412 comes back as
+/// status="conflict" carrying the fresh copy for review-and-retry.
+#[tauri::command]
+async fn update_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    calendar_id: String,
+    event_id: String,
+    etag: Option<String>,
+    draft: EventDraft,
+    send_updates: String,
+) -> Result<EventWriteResult, String> {
+    validate_event_draft(&draft)?;
+    validate_send_updates(&send_updates)?;
+    let email = active_gmail_cal(&state)?;
+    let (bearer, cal) = resolve_calendar(&state, &email, &calendar_id).await?;
+    // merge base: preserve existing guests' RSVP state through the overwrite
+    let existing = {
+        let conn = state.db.lock().unwrap();
+        store::get_event(&conn, &email, &calendar_id, &event_id)
+    };
+    let body = mail::calendar::event_body(&draft, existing.as_ref());
+    let outcome = mail::calendar::patch_event(
+        &state.http,
+        &bearer,
+        &cal,
+        &event_id,
+        etag.as_deref(),
+        &body,
+        &send_updates,
+    )
+    .await?;
+    finish_event_write(app, &state, &email, outcome)
+}
+
+/// Delete an event (If-Match guarded like update).
+#[tauri::command]
+async fn delete_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    calendar_id: String,
+    event_id: String,
+    etag: Option<String>,
+    send_updates: String,
+) -> Result<EventWriteResult, String> {
+    validate_send_updates(&send_updates)?;
+    let email = active_gmail_cal(&state)?;
+    let (bearer, cal) = resolve_calendar(&state, &email, &calendar_id).await?;
+    let conflict = mail::calendar::delete_event(
+        &state.http,
+        &bearer,
+        &cal,
+        &event_id,
+        etag.as_deref(),
+        &send_updates,
+    )
+    .await?;
+    match conflict {
+        Some(fresh) => {
+            {
+                let conn = state.db.lock().unwrap();
+                store::upsert_event(&conn, &email, &fresh)?;
+            }
+            // repaint with the fresh copy, matching finish_event_write
+            let _ = app.emit("calendar:updated", Option::<String>::None);
+            Ok(EventWriteResult { status: "conflict".into(), event: Some(fresh) })
+        }
+        None => {
+            {
+                let conn = state.db.lock().unwrap();
+                store::delete_event(&conn, &email, &calendar_id, &event_id)?;
+            }
+            let _ = app.emit("calendar:updated", Option::<String>::None);
+            spawn_calendar_sync(app, email, true);
+            Ok(EventWriteResult { status: "ok".into(), event: None })
+        }
+    }
+}
+
+/// RSVP to an event the account is a guest on; the organizer is notified
+/// (sendUpdates=all). Returns the updated event. Demo accounts record into
+/// the kv overlay so the fixture calendar reflects the choice.
+#[tauri::command]
+async fn rsvp_event(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    calendar_id: String,
+    event_id: String,
+    response: String,
+) -> Result<CalendarEvent, String> {
+    if !matches!(response.as_str(), "accepted" | "declined" | "tentative") {
+        return Err("invalid RSVP response".into());
+    }
+    // Demo dispatch keys off the ACCOUNT (like every other calendar command),
+    // not the client-supplied calendar id — a connected Gmail account can
+    // never be routed into the fixture overlay.
+    let is_demo = {
+        let conn = state.db.lock().unwrap();
+        store::active_account(&conn).provider != "gmail"
+    };
+    if is_demo {
+        let uid = format!("{event_id}@fission.local");
+        let mut ev = mail::mock::demo_event_by_uid(&uid).ok_or("event not found")?;
+        if !ev.attendees.iter().any(|a| a.self_) {
+            return Err("You're not on this event's guest list".into());
+        }
+        {
+            let conn = state.db.lock().unwrap();
+            let mut overlay: std::collections::HashMap<String, String> =
+                store::get_json(&conn, "demo_rsvp").unwrap_or_default();
+            overlay.insert(uid, response.clone());
+            store::set_json(&conn, "demo_rsvp", &overlay)?;
+        }
+        for a in ev.attendees.iter_mut() {
+            if a.self_ {
+                a.response_status = response.clone();
+            }
+        }
+        let _ = app.emit("calendar:updated", Option::<String>::None);
+        return Ok(ev);
+    }
+    let email = active_gmail_cal(&state)?;
+    let (bearer, cal) = resolve_calendar(&state, &email, &calendar_id).await?;
+    let outcome = mail::calendar::rsvp(&state.http, &bearer, &cal, &event_id, &response).await?;
+    match finish_event_write(app, &state, &email, outcome)? {
+        EventWriteResult { event: Some(ev), .. } => Ok(ev),
+        _ => Err("RSVP did not return the event".into()),
+    }
+}
+
+/// Resolve an invite's iCalUID to the account's copy of the event: local
+/// cache first, then a remote lookup across the calendars (primary first).
+/// Copies carrying our own attendee row win — RSVP acts on those.
+async fn resolve_invite_event(
+    state: &State<'_, AppState>,
+    email: &str,
+    uid: &str,
+) -> Option<CalendarEvent> {
+    // Prefer the copy RSVP can act on: our own attendee row on a calendar we
+    // can write (the primary), never a read-only shared-calendar copy.
+    let pick = |mut rows: Vec<CalendarEvent>| -> Option<CalendarEvent> {
+        if rows.is_empty() {
+            return None;
+        }
+        let rank = |e: &CalendarEvent| -> u8 {
+            let self_att = e.attendees.iter().any(|a| a.self_);
+            let writable = matches!(e.access_role.as_str(), "owner" | "writer");
+            match (self_att, writable) {
+                (true, true) => 0,
+                (true, false) => 1,
+                (false, true) => 2,
+                (false, false) => 3,
+            }
+        };
+        let best = rows.iter().enumerate().min_by_key(|(_, e)| rank(e))?.0;
+        Some(rows.swap_remove(best))
+    };
+    let miss_key = format!("invite_miss:{email}:{uid}");
     {
         let conn = state.db.lock().unwrap();
-        if let Some(w) =
-            store::get_json::<serde_json::Value>(&conn, &format!("cal_window:{}", active.email))
-        {
-            let covered = w["start"].as_i64().unwrap_or(i64::MAX) <= start_ms
-                && w["end"].as_i64().unwrap_or(0) >= end_ms;
-            let fresh = now_ms() - w["at"].as_i64().unwrap_or(0) < 120_000;
-            if covered && fresh {
-                return Ok(());
+        if let Some(ev) = pick(store::events_by_ical_uid(&conn, email, uid)) {
+            return Some(ev);
+        }
+        // A recent remote sweep found nothing — don't re-scan every calendar
+        // on every open of the same thread.
+        if let Some(at) = store::get_json::<i64>(&conn, &miss_key) {
+            if now_ms() - at < 10 * 60_000 {
+                return None;
             }
         }
     }
-    spawn_calendar_refresh(app, active.email, fetch_start, fetch_end);
-    Ok(())
+    let (bearer, mut calendars) = {
+        let mut sessions = state.gmail.lock().await;
+        let session = sessions.get_mut(email)?;
+        let calendars = mail::calendar::list_calendars(&state.http, session).await.ok()?;
+        let bearer = session.bearer(&state.http).await.ok()?;
+        (bearer, calendars)
+    };
+    calendars.sort_by_key(|c| !c.primary);
+    for cal in &calendars {
+        let rows = mail::calendar::events_by_ical_uid(&state.http, &bearer, cal, uid)
+            .await
+            .unwrap_or_default();
+        if let Some(ev) = pick(rows) {
+            let conn = state.db.lock().unwrap();
+            let _ = store::upsert_event(&conn, email, &ev);
+            return Some(ev);
+        }
+    }
+    {
+        let conn = state.db.lock().unwrap();
+        let _ = store::set_json(&conn, &miss_key, &now_ms());
+    }
+    None
+}
+
+/// Detect an invite in a thread (text/calendar part / .ics attachment
+/// captured at sync) and resolve it to the account's calendar copy. None =
+/// not an invite thread; event: None = unresolved (UI offers the
+/// open-in-Google-Calendar fallback).
+#[tauri::command]
+async fn thread_invite(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<Option<ThreadInvite>, String> {
+    let (raw, account, is_gmail) = {
+        let conn = state.db.lock().unwrap();
+        let Some(account) = store::account_of_thread(&conn, &thread_id) else {
+            return Ok(None);
+        };
+        let is_gmail = store::get_accounts(&conn)
+            .accounts
+            .iter()
+            .any(|a| a.email == account && a.provider == "gmail");
+        (store::thread_ics(&conn, &thread_id), account, is_gmail)
+    };
+    let Some(raw) = raw else { return Ok(None) };
+    let Some(parsed) = mail::ics::parse(&raw) else { return Ok(None) };
+    if parsed.method != "REQUEST" && parsed.method != "CANCEL" {
+        return Ok(None);
+    }
+    let event = if parsed.method == "CANCEL" {
+        None // informational strip only — nothing to RSVP to
+    } else if is_gmail {
+        resolve_invite_event(&state, &account, &parsed.uid).await
+    } else {
+        mail::mock::demo_event_by_uid(&parsed.uid).map(|mut ev| {
+            let conn = state.db.lock().unwrap();
+            apply_demo_rsvps(&conn, std::slice::from_mut(&mut ev));
+            ev
+        })
+    };
+    Ok(Some(ThreadInvite {
+        method: parsed.method,
+        uid: parsed.uid,
+        summary: parsed.summary,
+        organizer_email: parsed.organizer_email,
+        start_ms: parsed.start_ms,
+        end_ms: parsed.end_ms,
+        all_day: parsed.all_day,
+        open_url: parsed.url,
+        event,
+    }))
+}
+
+/// Shared tail of update/RSVP: persist the outcome, repaint, follow with an
+/// incremental sync pass.
+fn finish_event_write(
+    app: AppHandle,
+    state: &State<'_, AppState>,
+    email: &str,
+    outcome: mail::calendar::WriteOutcome,
+) -> Result<EventWriteResult, String> {
+    use mail::calendar::WriteOutcome;
+    match outcome {
+        WriteOutcome::Saved(ev) => {
+            {
+                let conn = state.db.lock().unwrap();
+                store::upsert_event(&conn, email, &ev)?;
+            }
+            let _ = app.emit("calendar:updated", Option::<String>::None);
+            spawn_calendar_sync(app, email.to_string(), true);
+            Ok(EventWriteResult { status: "ok".into(), event: Some(ev) })
+        }
+        WriteOutcome::Conflict(fresh) => {
+            // cache the fresh copy — the UI shows it in the conflict prompt
+            {
+                let conn = state.db.lock().unwrap();
+                store::upsert_event(&conn, email, &fresh)?;
+            }
+            let _ = app.emit("calendar:updated", Option::<String>::None);
+            Ok(EventWriteResult { status: "conflict".into(), event: Some(fresh) })
+        }
+    }
 }
 
 /// The daily Unsplash photo for empty rest states: cached 24h, stale-if-error,
@@ -2042,7 +2677,7 @@ async fn deliver_mail(app: &AppHandle, account_email: &str, mail: &OutgoingMail)
             snoozed_until: None,
         },
     };
-    store::upsert_thread(&conn, account_email, &thread, &[(msg, None, None, vec![])])?;
+    store::upsert_thread(&conn, account_email, &thread, &[(msg, None, None, None, vec![])])?;
     Ok(())
 }
 
@@ -2371,6 +3006,9 @@ pub fn run() {
                     },
                     _ => {
                         mail::mock::seed_if_empty(&conn).map_err(std::io::Error::other)?;
+                        // demo DBs seeded before v0.16 predate ics_data —
+                        // patch the invitation fixtures so their RSVP bar works
+                        mail::mock::heal_demo_ics(&conn);
                     }
                 }
             }
@@ -2601,10 +3239,11 @@ pub fn run() {
                             }
                         }
                     }
-                    // Calendar cache refresh: 30s after boot, then every ~5 min
-                    // (rolling window of a week back and three ahead), so the
-                    // panel paints instantly from SQLite. The same beat checks
-                    // whether each account's Google contacts are >24h stale.
+                    // Calendar sync: 30s after boot, then every ~5 min — an
+                    // incremental syncToken pull per calendar (initial pass
+                    // fetches -30d..+365d), so the panel paints instantly
+                    // from SQLite. The same beat checks whether each
+                    // account's Google contacts are >24h stale.
                     if tick % 10 == 1 {
                         let emails: Vec<String> = {
                             let conn = state.db.lock().unwrap();
@@ -2641,19 +3280,8 @@ pub fn run() {
                                 spawn_people_sync(handle.clone(), email.clone());
                             }
                         }
-                        let day_start = chrono::Local::now()
-                            .date_naive()
-                            .and_hms_opt(0, 0, 0)
-                            .and_then(|t| t.and_local_timezone(chrono::Local).single())
-                            .map(|t| t.timestamp_millis())
-                            .unwrap_or_else(now_ms);
                         for email in emails {
-                            spawn_calendar_refresh(
-                                handle.clone(),
-                                email,
-                                day_start - 7 * DAY_MS,
-                                day_start + 21 * DAY_MS,
-                            );
+                            spawn_calendar_sync(handle.clone(), email, true);
                         }
                     }
                     if changed {
@@ -2712,6 +3340,12 @@ pub fn run() {
             set_profile_photo,
             list_events,
             refresh_calendar,
+            list_calendars,
+            create_event,
+            update_event,
+            delete_event,
+            rsvp_event,
+            thread_invite,
             get_daily_photo,
             photo_shown,
             set_unsplash_key,

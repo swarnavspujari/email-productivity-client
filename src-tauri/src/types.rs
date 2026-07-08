@@ -201,11 +201,34 @@ pub struct DailyPhoto {
     pub fetched_at: i64,
 }
 
-/// One event in the calendar side panel.
+/// One guest on a calendar event.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EventAttendee {
+    pub email: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Optional attendance (vs required).
+    #[serde(default)]
+    pub optional: bool,
+    /// needsAction | declined | tentative | accepted
+    pub response_status: String,
+    /// This attendee row is the account owner.
+    #[serde(default, rename = "self")]
+    pub self_: bool,
+    #[serde(default)]
+    pub organizer: bool,
+}
+
+/// One event in the calendar side panel / week view.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
+    /// Raw Google calendar id the event lives on ("demo" for fixtures).
+    #[serde(default)]
+    pub calendar_id: String,
+    /// Display name of that calendar.
     pub calendar: String,
     pub color: Option<String>,
     pub title: String,
@@ -213,6 +236,105 @@ pub struct CalendarEvent {
     pub end_ms: i64,
     pub all_day: bool,
     pub location: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Link to the event in the Google Calendar web UI.
+    #[serde(default)]
+    pub html_link: Option<String>,
+    /// Concurrency handle — sent back as If-Match on update/delete.
+    #[serde(default)]
+    pub etag: Option<String>,
+    /// confirmed | tentative | cancelled
+    #[serde(default = "default_event_status")]
+    pub status: String,
+    #[serde(default)]
+    pub organizer_email: Option<String>,
+    /// The account owns this event (edit/delete vs RSVP affordances).
+    #[serde(default)]
+    pub organizer_self: bool,
+    /// Parent series id when this is one instance of a recurring event.
+    #[serde(default)]
+    pub recurring_event_id: Option<String>,
+    /// Google Meet link, read-only surface.
+    #[serde(default)]
+    pub hangout_link: Option<String>,
+    #[serde(default)]
+    pub attendees: Vec<EventAttendee>,
+    /// Our privilege on the parent calendar:
+    /// owner | writer | reader | freeBusyReader.
+    #[serde(default = "default_access_role")]
+    pub access_role: String,
+    /// RFC5545 UID — invite mail resolves to the event through this.
+    #[serde(default)]
+    pub ical_uid: Option<String>,
+}
+
+fn default_event_status() -> String {
+    "confirmed".into()
+}
+
+fn default_access_role() -> String {
+    "reader".into()
+}
+
+/// One calendar from the account's calendarList — the event modal's
+/// calendar selector (writable = accessRole owner/writer).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarInfo {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+    /// owner | writer | reader | freeBusyReader
+    pub access_role: String,
+    pub primary: bool,
+}
+
+/// The editable surface of an event, as the modal submits it. All-day events
+/// carry local-midnight millis with an EXCLUSIVE end (Google's date/date
+/// convention); attendees are bare emails — the core preserves existing
+/// guests' RSVP state on update by merging against the cached copy.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDraft {
+    pub calendar_id: String,
+    pub title: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub all_day: bool,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    pub attendees: Vec<String>,
+}
+
+/// An invite (or cancellation) detected in a mail thread, powering the RSVP
+/// bar. `event` is the matching Google Calendar event when the iCalUID
+/// resolves — RSVP acts on it; unresolved invites fall back to `open_url`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadInvite {
+    /// REQUEST (invite/update) | CANCEL
+    pub method: String,
+    pub uid: String,
+    pub summary: Option<String>,
+    pub organizer_email: Option<String>,
+    pub start_ms: Option<i64>,
+    pub end_ms: Option<i64>,
+    /// The ICS start was a date (all-day; end_ms is EXCLUSIVE per RFC5545).
+    pub all_day: bool,
+    pub open_url: Option<String>,
+    pub event: Option<CalendarEvent>,
+}
+
+/// Outcome of an event update/delete: saved, or refused because the event
+/// changed elsewhere (HTTP 412 against our If-Match etag) — `event` then
+/// carries the fresh server copy for the review-and-retry flow.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EventWriteResult {
+    /// "ok" | "conflict"
+    pub status: String,
+    pub event: Option<CalendarEvent>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

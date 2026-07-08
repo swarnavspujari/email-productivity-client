@@ -1,8 +1,10 @@
 // Full-screen week view (design system calendar week): 7-day grid over the
 // shared day-keyed event cache, today column tinted, now-line, ‹ › weeks and
-// ←/→ day-stepping via calendar.prevDay/nextDay.
-import { useEffect, useMemo, useState } from "react";
+// ←/→ day-stepping via calendar.prevDay/nextDay. Click an event for
+// details/RSVP; click or drag an empty slot to create one.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DAY_MS, startOfToday, useCalendar } from "@/stores/calendar";
+import { rsvpClasses } from "./CalendarPanel";
 import type { CalendarEvent } from "@/lib/types";
 
 const FIRST_HOUR = 7;
@@ -23,15 +25,20 @@ function WeekEvent({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
   const top = ((s - gridStart) / 3600_000) * PX_PER_HOUR;
   const height = Math.max(18, ((end - s) / 3600_000) * PX_PER_HOUR - 2);
   return (
-    <div
-      className="absolute left-0.5 right-0.5 overflow-hidden rounded-[5px] border border-accent/30 bg-accent-dim px-1.5 py-0.5"
+    <button
+      className={`absolute left-0.5 right-0.5 overflow-hidden rounded-[5px] border border-accent/30 bg-accent-dim px-1.5 py-0.5 text-left hover:border-accent/60 ${rsvpClasses(e)}`}
       style={{ top, height }}
       title={e.title}
+      onMouseDown={(ev) => ev.stopPropagation()}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        useCalendar.getState().openPopover(e, ev.clientX, ev.clientY);
+      }}
     >
       <div className="truncate text-[11px] font-medium leading-[14px] text-ink">
         {e.title}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -41,6 +48,10 @@ export function CalendarWeek() {
   const loadedDays = useCalendar((s) => s.loadedDays);
   const error = useCalendar((s) => s.error);
   const [nowTick, setNowTick] = useState(Date.now());
+  const [drag, setDrag] = useState<{ day: number; from: number; to: number } | null>(
+    null
+  );
+  const colRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
   const focusedDay = useMemo(
     () => startOfToday() + dayOffset * DAY_MS,
@@ -67,6 +78,40 @@ export function CalendarWeek() {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
     return () => clearInterval(t);
   }, []);
+
+  /** Snap a pointer y (within a day column) to a 30-minute slot. */
+  const msAtY = (day: number, clientY: number): number => {
+    const col = colRefs.current[day];
+    if (!col) return day + 9 * 3600_000;
+    const rect = col.getBoundingClientRect();
+    const hours = (clientY - rect.top) / PX_PER_HOUR + FIRST_HOUR;
+    const snapped = Math.round(hours * 2) / 2;
+    return day + Math.min(LAST_HOUR, Math.max(FIRST_HOUR, snapped)) * 3600_000;
+  };
+
+  const beginSlotDrag = (day: number) => (ev: React.MouseEvent) => {
+    if (ev.button !== 0) return;
+    const from = msAtY(day, ev.clientY);
+    setDrag({ day, from, to: from + 30 * 60_000 });
+    const move = (e: MouseEvent) => {
+      const to = msAtY(day, e.clientY);
+      const next = to > from ? to : from + 30 * 60_000;
+      // mousemove fires at pointer rate; only re-render on a new 30-min slot
+      setDrag((d) => (d && d.to === next ? d : { day, from, to: next }));
+    };
+    const up = (e: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setDrag(null);
+      const to = msAtY(day, e.clientY);
+      const start = Math.min(from, to);
+      let end = Math.max(from, to);
+      if (end - start < 30 * 60_000) end = start + 3600_000; // plain click = 1h
+      useCalendar.getState().openCreate(start, end);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   const monthTitle = new Date(focusedDay).toLocaleDateString(undefined, {
     month: "long",
@@ -101,6 +146,16 @@ export function CalendarWeek() {
           onClick={() => useCalendar.getState().goToday()}
         >
           Today
+        </button>
+        <button
+          className="rounded-md bg-accent px-2.5 py-0.5 text-[12px] font-medium text-on-accent hover:opacity-90"
+          onClick={() => {
+            const start = focusedDay + 9 * 3600_000;
+            useCalendar.getState().openCreate(start, start + 3600_000);
+          }}
+          title="New event (B)"
+        >
+          New event
         </button>
         {loading && (
           <span className="zb-spin inline-block h-3 w-3 rounded-full border-2 border-line-strong border-t-accent" />
@@ -156,15 +211,34 @@ export function CalendarWeek() {
                 {days.map((d, i) => (
                   <div
                     key={d}
-                    className={`relative flex-1 ${i ? "border-l border-line" : ""} ${
+                    ref={(el) => {
+                      colRefs.current[d] = el;
+                    }}
+                    className={`relative flex-1 cursor-crosshair ${i ? "border-l border-line" : ""} ${
                       d === today ? "bg-ok/5" : ""
                     } ${d === focusedDay ? "bg-selected/40" : ""}`}
+                    onMouseDown={beginSlotDrag(d)}
                   >
                     {(eventsByDay[d] ?? [])
                       .filter((e) => !e.allDay)
                       .map((e) => (
                         <WeekEvent key={e.id} e={e} dayStart={d} />
                       ))}
+                    {drag?.day === d && (
+                      <div
+                        className="pointer-events-none absolute left-0.5 right-0.5 rounded-[5px] border border-accent/60 bg-accent-dim/70"
+                        style={{
+                          top:
+                            ((Math.min(drag.from, drag.to) - d - FIRST_HOUR * 3600_000) /
+                              3600_000) *
+                            PX_PER_HOUR,
+                          height: Math.max(
+                            (Math.abs(drag.to - drag.from) / 3600_000) * PX_PER_HOUR,
+                            12
+                          ),
+                        }}
+                      />
+                    )}
                   </div>
                 ))}
                 {today >= weekStart &&

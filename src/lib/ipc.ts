@@ -7,6 +7,7 @@ import type {
   AccountsState,
   AiProviderId,
   CalendarEvent,
+  CalendarInfo,
   Capabilities,
   Contact,
   DailyPhoto,
@@ -15,8 +16,12 @@ import type {
   DriveChunkResult,
   DriveFile,
   DriveShareMode,
+  EventDraft,
+  EventWriteResult,
   MailAttachment,
   LintHit,
+  RsvpResponse,
+  SendUpdates,
   ProfileInfo,
   KnowledgeBase,
   Message,
@@ -27,6 +32,7 @@ import type {
   Streaks,
   Thread,
   ThreadId,
+  ThreadInvite,
   UnsubResult,
   ZeroEvent,
 } from "./types";
@@ -141,8 +147,36 @@ export interface Backend {
   /** Calendar events for the side panel / week view, [startMs, endMs).
    *  Local-first: reads the SQLite cache; refreshCalendar repopulates it. */
   listEvents(startMs: number, endMs: number): Promise<CalendarEvent[]>;
-  /** Kick a background fetch of fresh events around the range (throttled). */
+  /** Kick a background sync pass (throttled; incremental via syncToken). */
   refreshCalendar(startMs: number, endMs: number): Promise<void>;
+  /** The account's calendars; accessRole owner/writer = writable. */
+  listCalendars(): Promise<CalendarInfo[]>;
+  /** Create an event (direct Google call; sendUpdates emails the guests). */
+  createEvent(draft: EventDraft, sendUpdates: SendUpdates): Promise<CalendarEvent>;
+  /** Update with If-Match on etag; status "conflict" = changed elsewhere,
+   *  `event` holds the fresh copy to review and retry against. */
+  updateEvent(
+    calendarId: string,
+    eventId: string,
+    etag: string | null,
+    draft: EventDraft,
+    sendUpdates: SendUpdates
+  ): Promise<EventWriteResult>;
+  /** Delete with If-Match on etag (same conflict contract as update). */
+  deleteEvent(
+    calendarId: string,
+    eventId: string,
+    etag: string | null,
+    sendUpdates: SendUpdates
+  ): Promise<EventWriteResult>;
+  /** RSVP as a guest; the organizer is notified. Returns the updated event. */
+  rsvpEvent(
+    calendarId: string,
+    eventId: string,
+    response: RsvpResponse
+  ): Promise<CalendarEvent>;
+  /** Invite detection for the open thread (null = not an invite). */
+  threadInvite(threadId: ThreadId): Promise<ThreadInvite | null>;
 
   /** Daily Unsplash photo for empty rest states (null when unavailable). */
   getDailyPhoto(): Promise<DailyPhoto | null>;
@@ -388,6 +422,46 @@ class TauriBackend implements Backend {
   }
   refreshCalendar(startMs: number, endMs: number) {
     return invoke<void>("refresh_calendar", { startMs, endMs });
+  }
+  listCalendars() {
+    return invoke<CalendarInfo[]>("list_calendars");
+  }
+  createEvent(draft: EventDraft, sendUpdates: SendUpdates) {
+    return invoke<CalendarEvent>("create_event", { draft, sendUpdates });
+  }
+  updateEvent(
+    calendarId: string,
+    eventId: string,
+    etag: string | null,
+    draft: EventDraft,
+    sendUpdates: SendUpdates
+  ) {
+    return invoke<EventWriteResult>("update_event", {
+      calendarId,
+      eventId,
+      etag,
+      draft,
+      sendUpdates,
+    });
+  }
+  deleteEvent(
+    calendarId: string,
+    eventId: string,
+    etag: string | null,
+    sendUpdates: SendUpdates
+  ) {
+    return invoke<EventWriteResult>("delete_event", {
+      calendarId,
+      eventId,
+      etag,
+      sendUpdates,
+    });
+  }
+  rsvpEvent(calendarId: string, eventId: string, response: RsvpResponse) {
+    return invoke<CalendarEvent>("rsvp_event", { calendarId, eventId, response });
+  }
+  threadInvite(threadId: ThreadId) {
+    return invoke<ThreadInvite | null>("thread_invite", { threadId });
   }
   getDailyPhoto() {
     return invoke<DailyPhoto | null>("get_daily_photo");

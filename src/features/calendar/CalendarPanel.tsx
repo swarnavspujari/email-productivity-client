@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DAY_MS, startOfToday, useCalendar } from "@/stores/calendar";
 import { useUi } from "@/stores/ui";
 import type { CalendarEvent } from "@/lib/types";
@@ -18,6 +18,16 @@ function timeRange(e: CalendarEvent): string {
   return `${fmt(e.startMs)} – ${fmt(e.endMs)}`;
 }
 
+/** RSVP tint: events you declined fade, pending invites get a dashed edge. */
+export function rsvpClasses(e: CalendarEvent): string {
+  const self = e.attendees.find((a) => a.self);
+  if (!self || e.organizerSelf) return "";
+  if (self.responseStatus === "declined") return "opacity-40 line-through";
+  if (self.responseStatus === "needsAction" || self.responseStatus === "tentative")
+    return "border-dashed";
+  return "";
+}
+
 function EventBlock({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
   const gridStart = dayStart + FIRST_HOUR * 3600_000;
   const gridEnd = dayStart + LAST_HOUR * 3600_000;
@@ -28,14 +38,24 @@ function EventBlock({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
   const height = Math.max(20, ((end - s) / 3600_000) * PX_PER_HOUR - 2);
   const past = e.endMs < Date.now();
   return (
-    <div
-      className={`absolute left-1 right-1 overflow-hidden rounded-md border border-accent/30 bg-accent-dim px-2 py-1 ${
+    <button
+      className={`absolute left-1 right-1 overflow-hidden rounded-md border border-accent/30 bg-accent-dim px-2 py-1 text-left ${
         past ? "opacity-55" : ""
-      }`}
+      } ${rsvpClasses(e)} hover:border-accent/60`}
       style={{ top, height }}
       title={`${e.title} · ${timeRange(e)}${e.location ? ` · ${e.location}` : ""}${
         e.calendar !== "Demo" ? ` · ${e.calendar}` : ""
       }`}
+      onMouseDown={(ev) => {
+        // keep slot-drag from starting, but still hand the panel keyboard
+        // focus like any other click inside the aside
+        ev.stopPropagation();
+        useUi.getState().setFocusRegion("calendar");
+      }}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        useCalendar.getState().openPopover(e, ev.clientX, ev.clientY);
+      }}
     >
       <div className="truncate text-[12px] font-medium leading-4 text-ink">
         {e.title}
@@ -43,13 +63,14 @@ function EventBlock({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
       {height > 34 && (
         <div className="truncate text-[11px] text-ink-3">{timeRange(e)}</div>
       )}
-    </div>
+    </button>
   );
 }
 
-/** Right-hand day calendar, Superhuman-style: toggleable, read-only, painted
- *  instantly from the shared day-keyed cache; a background refresh keeps it
- *  fresh. ←/→ move days while the panel has focus. */
+/** Right-hand day calendar, Superhuman-style: toggleable, painted instantly
+ *  from the shared day-keyed cache; a background sync keeps it fresh. ←/→
+ *  move days while the panel has focus. Click an event for details/RSVP;
+ *  click or drag an empty slot to create one. */
 export function CalendarPanel() {
   const dayOffset = useCalendar((s) => s.dayOffset);
   const events = useCalendar((s) => s.eventsByDay);
@@ -57,6 +78,8 @@ export function CalendarPanel() {
   const error = useCalendar((s) => s.error);
   const focused = useUi((s) => s.focusRegion === "calendar");
   const [nowTick, setNowTick] = useState(Date.now());
+  const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const dayStart = useMemo(() => startOfToday() + dayOffset * DAY_MS, [dayOffset]);
 
   useEffect(() => {
@@ -69,6 +92,38 @@ export function CalendarPanel() {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
     return () => clearInterval(t);
   }, []);
+
+  /** Snap a pointer y to a 30-minute slot inside the visible hours. */
+  const msAtY = (clientY: number): number => {
+    const rect = gridRef.current!.getBoundingClientRect();
+    const hours = (clientY - rect.top) / PX_PER_HOUR + FIRST_HOUR;
+    const snapped = Math.round(hours * 2) / 2;
+    return dayStart + Math.min(LAST_HOUR, Math.max(FIRST_HOUR, snapped)) * 3600_000;
+  };
+
+  const beginSlotDrag = (ev: React.MouseEvent) => {
+    if (ev.button !== 0 || !gridRef.current) return;
+    const from = msAtY(ev.clientY);
+    setDrag({ from, to: from + 30 * 60_000 });
+    const move = (e: MouseEvent) => {
+      const to = msAtY(e.clientY);
+      const next = to > from ? to : from + 30 * 60_000;
+      // mousemove fires at pointer rate; only re-render on a new 30-min slot
+      setDrag((d) => (d && d.to === next ? d : { from, to: next }));
+    };
+    const up = (e: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setDrag(null);
+      const to = msAtY(e.clientY);
+      const start = Math.min(from, to);
+      let end = Math.max(from, to);
+      if (end - start < 30 * 60_000) end = start + 3600_000; // plain click = 1h
+      useCalendar.getState().openCreate(start, end);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   const dayEvents = events[dayStart];
   const loading = !loadedDays[dayStart];
@@ -85,6 +140,14 @@ export function CalendarPanel() {
     month: "short",
     day: "numeric",
   });
+
+  const dragTop = drag
+    ? ((Math.min(drag.from, drag.to) - dayStart - FIRST_HOUR * 3600_000) / 3600_000) *
+      PX_PER_HOUR
+    : 0;
+  const dragHeight = drag
+    ? (Math.abs(drag.to - drag.from) / 3600_000) * PX_PER_HOUR
+    : 0;
 
   return (
     <aside
@@ -113,6 +176,16 @@ export function CalendarPanel() {
         )}
         <button
           className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
+          onClick={() => {
+            const start = dayStart + 9 * 3600_000;
+            useCalendar.getState().openCreate(start, start + 3600_000);
+          }}
+          title="New event (B)"
+        >
+          +
+        </button>
+        <button
+          className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
           onClick={() => useCalendar.getState().shiftDay(-1)}
           title="Previous day (←)"
         >
@@ -130,13 +203,16 @@ export function CalendarPanel() {
       {allDay.length > 0 && (
         <div className="space-y-1 px-4 pb-2">
           {allDay.map((e) => (
-            <div
+            <button
               key={e.id}
-              className="truncate rounded-md border border-accent/30 bg-accent-dim px-2 py-1 text-[12px] font-medium text-ink"
+              className={`block w-full truncate rounded-md border border-accent/30 bg-accent-dim px-2 py-1 text-left text-[12px] font-medium text-ink hover:border-accent/60 ${rsvpClasses(e)}`}
               title={e.title}
+              onClick={(ev) =>
+                useCalendar.getState().openPopover(e, ev.clientX, ev.clientY)
+              }
             >
               {e.title}
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -166,19 +242,30 @@ export function CalendarPanel() {
                 </span>
               </div>
             ))}
-            <div className="absolute bottom-0 left-12 right-0 top-0">
+            <div
+              ref={gridRef}
+              className="absolute bottom-0 left-12 right-0 top-0 cursor-crosshair"
+              onMouseDown={beginSlotDrag}
+              title="Click or drag to create an event"
+            >
               {timed.map((e) => (
                 <EventBlock key={e.id} e={e} dayStart={dayStart} />
               ))}
-              {timed.length === 0 && (
-                <div className="pt-10 text-center text-[12px] text-ink-3">
+              {drag && (
+                <div
+                  className="pointer-events-none absolute left-1 right-1 rounded-md border border-accent/60 bg-accent-dim/70"
+                  style={{ top: dragTop, height: Math.max(dragHeight, 12) }}
+                />
+              )}
+              {timed.length === 0 && !drag && (
+                <div className="pointer-events-none pt-10 text-center text-[12px] text-ink-3">
                   Nothing scheduled.
                 </div>
               )}
             </div>
             {nowTop !== null && (
               <div
-                className="absolute left-10 right-0 border-t-2 border-bad"
+                className="pointer-events-none absolute left-10 right-0 border-t-2 border-bad"
                 style={{ top: nowTop }}
               >
                 <span className="absolute -left-1 -top-[5px] h-2 w-2 rounded-full bg-bad" />

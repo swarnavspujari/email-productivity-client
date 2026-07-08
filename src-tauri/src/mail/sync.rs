@@ -374,7 +374,7 @@ pub fn thread_from_json(id: &str, v: &Value, in_inbox: bool) -> (Thread, Vec<sto
             .into_iter()
             .map(|(a, remote, content_id)| (a, remote, content_id, None))
             .collect();
-        msgs.push((parsed.message, parsed.rfc_message_id, parsed.list_unsubscribe, atts));
+        msgs.push((parsed.message, parsed.rfc_message_id, parsed.list_unsubscribe, parsed.ics, atts));
     }
 
     let starred = labels.contains("STARRED");

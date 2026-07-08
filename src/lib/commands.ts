@@ -4,7 +4,7 @@ import { backend } from "./ipc";
 import { useUpdater } from "./updater";
 import type { Binding } from "./keyboard";
 import { popUndo, pushUndo } from "./undo";
-import { useCalendar } from "@/stores/calendar";
+import { DAY_MS, startOfToday, useCalendar } from "@/stores/calendar";
 import { useMail, visibleThreads } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
 import {
@@ -865,6 +865,25 @@ export function allCommands(): Command[] {
       group: "Navigate",
       when: () => calendarFocused(),
       run: () => useCalendar.getState().goToday(),
+    },
+    {
+      // B = Create Event, matching Superhuman (bare C stays Compose).
+      id: "calendar.newEvent",
+      title: "New Calendar Event",
+      group: "Navigate",
+      when: () => !inCompose(),
+      run: () => {
+        const cal = useCalendar.getState();
+        // honor the navigated day only while a calendar view is actually
+        // showing it — from the mail list, B means "event today"
+        const offset = calendarFocused() ? cal.dayOffset : 0;
+        const dayStart = startOfToday() + offset * DAY_MS;
+        // today → the next full hour; other days → 9 am
+        const hour =
+          offset === 0 ? Math.min(new Date().getHours() + 1, 19) : 9;
+        const start = dayStart + hour * 3600_000;
+        cal.openCreate(start, start + 3600_000);
+      },
     },
     {
       id: "sidebar.toggle",

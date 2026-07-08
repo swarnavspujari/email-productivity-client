@@ -173,9 +173,24 @@ export interface DailyPhoto {
   fetchedAt: number;
 }
 
-/** One event in the calendar side panel. */
+/** One guest on a calendar event. */
+export interface EventAttendee {
+  email: string;
+  displayName: string | null;
+  /** Optional attendance (vs required). */
+  optional: boolean;
+  responseStatus: "needsAction" | "declined" | "tentative" | "accepted";
+  /** This attendee row is the account owner. */
+  self: boolean;
+  organizer: boolean;
+}
+
+/** One event in the calendar side panel / week view. */
 export interface CalendarEvent {
   id: string;
+  /** Raw Google calendar id the event lives on ("demo" for fixtures). */
+  calendarId: string;
+  /** Display name of that calendar. */
   calendar: string;
   color: string | null;
   title: string;
@@ -183,6 +198,78 @@ export interface CalendarEvent {
   endMs: number;
   allDay: boolean;
   location: string | null;
+  description: string | null;
+  /** Link to the event in the Google Calendar web UI. */
+  htmlLink: string | null;
+  /** Concurrency handle — sent back as If-Match on update/delete. */
+  etag: string | null;
+  status: "confirmed" | "tentative" | "cancelled";
+  organizerEmail: string | null;
+  /** The account owns this event (edit/delete vs RSVP affordances). */
+  organizerSelf: boolean;
+  /** Parent series id when this is one instance of a recurring event. */
+  recurringEventId: string | null;
+  /** Google Meet link, read-only surface. */
+  hangoutLink: string | null;
+  attendees: EventAttendee[];
+  /** Our privilege on the parent calendar. */
+  accessRole: "owner" | "writer" | "reader" | "freeBusyReader";
+  /** RFC5545 UID — invite mail resolves to the event through this. */
+  icalUid: string | null;
+}
+
+/** One calendar from the account's calendarList (event modal selector). */
+export interface CalendarInfo {
+  id: string;
+  name: string;
+  color: string | null;
+  accessRole: "owner" | "writer" | "reader" | "freeBusyReader";
+  /** The account's primary calendar (default target for new events). */
+  primary: boolean;
+}
+
+/** Guest-notification choice for event writes (Google sendUpdates). */
+export type SendUpdates = "all" | "none";
+
+/** RSVP responses (attendee responseStatus values you can set). */
+export type RsvpResponse = "accepted" | "declined" | "tentative";
+
+/** The editable surface of an event, as the modal submits it. All-day
+ *  events carry local-midnight millis with an EXCLUSIVE end. */
+export interface EventDraft {
+  calendarId: string;
+  title: string;
+  startMs: number;
+  endMs: number;
+  allDay: boolean;
+  location: string | null;
+  description: string | null;
+  /** Bare emails; existing guests keep their RSVP state on update. */
+  attendees: string[];
+}
+
+/** Outcome of an event update/delete: saved, or refused because the event
+ *  changed elsewhere (412 against our etag) — `event` then carries the
+ *  fresh server copy for the review-and-retry flow. */
+export interface EventWriteResult {
+  status: "ok" | "conflict";
+  event: CalendarEvent | null;
+}
+
+/** An invite (or cancellation) detected in a mail thread — the RSVP bar.
+ *  `event` is the resolved calendar copy RSVP acts on; unresolved invites
+ *  fall back to `openUrl` / Google Calendar. */
+export interface ThreadInvite {
+  method: "REQUEST" | "CANCEL";
+  uid: string;
+  summary: string | null;
+  organizerEmail: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  /** The ICS start was a date (all-day; endMs is EXCLUSIVE per RFC5545). */
+  allDay: boolean;
+  openUrl: string | null;
+  event: CalendarEvent | null;
 }
 
 export interface UnsubResult {

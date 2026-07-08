@@ -25,7 +25,8 @@ does *not* require verification up front.
    project `fission-mail`, and **Enable** all four:
    - **Gmail API**
    - **Google Calendar API** — easy to miss, and this is the one that bites:
-     until it's enabled the calendar panel returns a 403
+     until it's enabled the calendar panel (and, v0.16+, every event
+     create/edit/RSVP) returns a 403
      (`accessNotConfigured` / "has not been used in project …") for **every**
      tester, no matter how many times they reconnect. Enabling it here fixes it
      for all testers at once. (Newly enabled APIs can take a minute to propagate.)
@@ -96,7 +97,7 @@ Cheaper alternatives if the cap ever bites before verification:
 | `gmail.modify` | read, archive, label, star, trash, send | restricted |
 | `gmail.settings.basic` (v0.15+) | read send-as aliases + signatures | restricted family |
 | `openid email profile` (v0.6+) | account email + profile photo in the UI | non-sensitive |
-| `calendar` (v0.15+, replaces `calendar.readonly`) | calendar panel today; event CRUD/invites next | sensitive |
+| `calendar` (v0.15+, replaces `calendar.readonly`) | calendar panel + week view; since v0.16: create/edit/delete events with guest invites, RSVP (from the calendar and from invite mail), per-calendar incremental sync | sensitive |
 | `drive` (v0.15+) | attach from Drive, upload oversized attachments, set share permissions on send | restricted |
 | `contacts.readonly` (v0.15+) | saved-contacts recipient autocomplete | sensitive |
 | `contacts.other.readonly` (v0.15+) | "Other contacts" (people you've emailed) autocomplete | sensitive |
@@ -115,6 +116,14 @@ Google's consent screen shows **per-scope checkboxes** — a user can grant
 Gmail but skip Drive. The app records exactly what was granted
 (`granted_scopes` per account) and gates each feature independently; a
 skipped scope just keeps that feature off, with the same Reconnect CTA.
+
+### v0.16 (calendar two-way sync): no new scopes
+
+Build B's event create/edit/delete, guest invites, RSVP, and the syncToken
+sync engine all ride the full `calendar` scope v0.15 already requests —
+**no console changes and no re-consent beyond v0.15's**. An account that
+skipped the Calendar checkbox (or predates v0.15) sees the calendar error
+guidance and the same Reconnect CTA; everything else keeps working.
 
 Verification posture: `gmail.modify` already put the app in
 restricted/CASA territory; `drive` is also restricted but adds no new

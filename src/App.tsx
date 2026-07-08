@@ -13,6 +13,8 @@ import { UndoToast } from "@/components/UndoToast";
 import { UndoSendBar } from "@/components/UndoSendBar";
 import { MailScreen } from "@/features/inbox/MailScreen";
 import { CalendarWeek } from "@/features/calendar/CalendarWeek";
+import { EventModal } from "@/features/calendar/EventModal";
+import { EventPopover } from "@/features/calendar/EventPopover";
 import { useCalendar } from "@/stores/calendar";
 import { ThreadView } from "@/features/thread/ThreadView";
 import { Compose } from "@/features/compose/Compose";
@@ -58,6 +60,8 @@ export default function App() {
   const toast = useUi((s) => s.toast);
   const pendingSend = useUi((s) => s.pendingSend);
   const openThreadId = useMail((s) => s.openThreadId);
+  const eventModal = useCalendar((s) => s.modal);
+  const eventPopover = useCalendar((s) => s.popover);
   const updateReady = useUpdater((s) => s.ready);
   const updateDownloading = useUpdater((s) => s.downloading);
   const updateError = useUpdater((s) => s.error);
@@ -110,6 +114,9 @@ export default function App() {
     const unCalendar = backend.onCalendarUpdated((err) =>
       useCalendar.getState().handleUpdated(err)
     );
+    // returning to the app → an incremental calendar pull (throttled in core)
+    const onFocus = () => useCalendar.getState().requestRefresh();
+    window.addEventListener("focus", onFocus);
     return () => {
       clearTimeout(timer);
       unMail();
@@ -117,6 +124,7 @@ export default function App() {
       unTriage();
       unNotice();
       unCalendar();
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
@@ -125,12 +133,15 @@ export default function App() {
       getBindings: commandBindings,
       isOverlayOpen: () => {
         const u = useUi.getState();
+        const cal = useCalendar.getState();
         return (
           u.paletteOpen ||
           u.picker !== "none" ||
           u.celebration !== null ||
           u.drivePrompt !== null ||
-          u.sharePrompt !== null
+          u.sharePrompt !== null ||
+          cal.modal !== null ||
+          cal.popover !== null
         );
       },
     });
@@ -275,6 +286,8 @@ export default function App() {
         {picker === "snippet" && <SnippetPicker />}
         {picker === "drafts" && <DraftsPicker />}
         {picker === "drivePicker" && <DrivePicker />}
+        {eventModal && <EventModal key={`${eventModal.mode}-${eventModal.event?.id ?? "new"}`} />}
+        {eventPopover && <EventPopover />}
         {celebration && <Celebration />}
 
         {/* Bottom-left notification stack: the Undo Send bar sits closest to the

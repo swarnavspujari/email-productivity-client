@@ -93,6 +93,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "calendar.prevDay": "left|-",
   "calendar.nextDay": "right|=",
   "calendar.today": "",
+  // B = Create Event, matching Superhuman (C stays Compose).
+  "calendar.newEvent": "b",
   "sidebar.toggle": "",
   "shortcutBar.toggle": "",
   "shortcuts.show": "",

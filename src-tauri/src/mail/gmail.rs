@@ -394,8 +394,14 @@ fn collect_body_att_paths(part: &Value, prefix: &[usize], out: &mut Vec<(Vec<usi
     let filename = part["filename"].as_str().unwrap_or_default();
     let has_cid = header(part, "Content-ID").or_else(|| header(part, "Content-Id")).is_some();
     let is_body = filename.is_empty() && !has_cid && (mime == "text/html" || mime == "text/plain");
+    // Calendar invites whose ICS rides only as an attachment (invite.ics with
+    // no inline data) hydrate too, so the invite parse sees the payload —
+    // but only plausibly-sized ones (the part's declared size is known here;
+    // walk_parts would discard an oversized payload after the download).
+    let is_ics = is_ics_mime(mime, filename)
+        && part["body"]["size"].as_i64().unwrap_or(0) <= MAX_ICS_BYTES as i64;
     let data_empty = part["body"]["data"].as_str().map(str::is_empty).unwrap_or(true);
-    if is_body && data_empty {
+    if (is_body || is_ics) && data_empty {
         if let Some(att_id) = part["body"]["attachmentId"].as_str() {
             out.push((prefix.to_vec(), att_id.to_string()));
         }
@@ -418,6 +424,8 @@ pub struct ParsedMessage {
     /// (meta, gmail attachment id, Content-ID without angle brackets)
     pub attachments: Vec<(Attachment, Option<String>, Option<String>)>,
     pub label_ids: Vec<String>,
+    /// Raw iCalendar payload when the message carries one (invite mail).
+    pub ics: Option<String>,
 }
 
 /// Pick the actionable target out of a List-Unsubscribe header:
@@ -526,14 +534,35 @@ pub fn strip_html(html: &str) -> String {
 // filename, mime, size, attachment_id, content_id
 type RawAtt = (String, String, i64, String, Option<String>);
 
+/// Calendar-object MIME types (invites): the bare text/calendar alternative
+/// part and the invite.ics attachment flavor.
+fn is_ics_mime(mime: &str, filename: &str) -> bool {
+    mime == "text/calendar"
+        || mime == "application/ics"
+        || filename.to_ascii_lowercase().ends_with(".ics")
+}
+
+const MAX_ICS_BYTES: usize = 131_072;
+
 fn walk_parts(
     part: &Value,
     text: &mut Option<String>,
     html: &mut Option<String>,
     atts: &mut Vec<RawAtt>,
+    ics: &mut Option<String>,
 ) {
     let mime = part["mimeType"].as_str().unwrap_or_default();
     let filename = part["filename"].as_str().unwrap_or_default();
+    // Invite payload: capture the first calendar object regardless of whether
+    // it's the alternative part or the .ics attachment (hydrate_body_data
+    // inlines attachment-backed copies before this parse runs on sync).
+    if ics.is_none() && is_ics_mime(mime, filename) {
+        if let Some(data) = decode_body(part) {
+            if !data.trim().is_empty() && data.len() <= MAX_ICS_BYTES {
+                *ics = Some(data);
+            }
+        }
+    }
     // Content-ID marks inline images referenced as cid: from the HTML body —
     // those often have empty filenames, so check it alongside filename.
     let content_id = header(part, "Content-ID")
@@ -556,7 +585,7 @@ fn walk_parts(
     }
     if let Some(children) = part["parts"].as_array() {
         for child in children {
-            walk_parts(child, text, html, atts);
+            walk_parts(child, text, html, atts, ics);
         }
     }
 }
@@ -585,7 +614,8 @@ pub fn parse_gmail_message(msg: &Value, thread_id: &str) -> ParsedMessage {
     let mut text = None;
     let mut html = None;
     let mut raw_atts = vec![];
-    walk_parts(payload, &mut text, &mut html, &mut raw_atts);
+    let mut ics = None;
+    walk_parts(payload, &mut text, &mut html, &mut raw_atts, &mut ics);
     let body_text = text
         .clone()
         .or_else(|| html.as_deref().map(strip_html))
@@ -611,6 +641,7 @@ pub fn parse_gmail_message(msg: &Value, thread_id: &str) -> ParsedMessage {
 
     ParsedMessage {
         list_unsubscribe,
+        ics,
         message: Message {
             id: id.clone(),
             thread_id: thread_id.to_string(),

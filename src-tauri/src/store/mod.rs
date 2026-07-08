@@ -87,6 +87,10 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
         "ALTER TABLE outbox ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // v0.16: invite mail — the raw iCalendar payload (text/calendar part or
+    // .ics attachment) captured at sync so the RSVP bar detects invites
+    // without refetching the message.
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN ics_data TEXT", []);
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS drafts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,9 +124,25 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
     .map_err(|e| e.to_string())?;
     // v0.9: local-first calendar — events cache read by the panel/week view,
     // refreshed in the background (mirrors the mail read/sync split).
+    // v0.16: full event model + per-calendar syncToken sync. The old PRIMARY
+    // KEY (account_id, id) can't key per-calendar upserts (the same event id
+    // appears on every attendee's calendar), and SQLite can't ALTER a PK —
+    // but events is a pure cache the next sync beat rebuilds, so the one
+    // schema change that can't ride a guarded ALTER drops and recreates.
+    let events_v16: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'calendar_id'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !events_v16 {
+        conn.execute_batch("DROP TABLE IF EXISTS events;").map_err(|e| e.to_string())?;
+        // stale full-window bookmarks would suppress the first refetch
+        conn.execute("DELETE FROM kv WHERE key LIKE 'cal_window:%'", [])
+            .map_err(|e| e.to_string())?;
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS events (
             account_id TEXT NOT NULL,
+            calendar_id TEXT NOT NULL DEFAULT '',
             id TEXT NOT NULL,
             calendar TEXT NOT NULL DEFAULT '',
             color TEXT,
@@ -131,9 +151,21 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
             end_ms INTEGER NOT NULL,
             all_day INTEGER NOT NULL DEFAULT 0,
             location TEXT,
-            PRIMARY KEY (account_id, id)
+            description TEXT,
+            html_link TEXT,
+            etag TEXT,
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            organizer_email TEXT,
+            organizer_self INTEGER NOT NULL DEFAULT 0,
+            recurring_event_id TEXT,
+            hangout_link TEXT,
+            attendees TEXT NOT NULL DEFAULT '[]',
+            access_role TEXT NOT NULL DEFAULT 'reader',
+            ical_uid TEXT,
+            PRIMARY KEY (account_id, calendar_id, id)
         );
-        CREATE INDEX IF NOT EXISTS idx_events_time ON events(account_id, start_ms);",
+        CREATE INDEX IF NOT EXISTS idx_events_time ON events(account_id, start_ms);
+        CREATE INDEX IF NOT EXISTS idx_events_ical ON events(account_id, ical_uid);",
     )
     .map_err(|e| e.to_string())?;
     // v0.9: contact index for recipient autocomplete, derived from every
@@ -296,6 +328,8 @@ pub fn default_settings() -> Settings {
         ("calendar.prevDay", "left|-"),
         ("calendar.nextDay", "right|="),
         ("calendar.today", ""),
+        // B = Create Event, matching Superhuman (C stays Compose).
+        ("calendar.newEvent", "b"),
         ("sidebar.toggle", ""),
         ("shortcutBar.toggle", ""),
         ("shortcuts.show", ""),
@@ -614,10 +648,11 @@ pub fn get_messages(conn: &Connection, thread_id: &str) -> Result<Vec<Message>, 
 }
 
 /// One message row bound for upsert: (message, rfc Message-ID,
-/// List-Unsubscribe header, attachments as (meta, remote id, Content-ID,
-/// cached text)).
+/// List-Unsubscribe header, raw iCalendar payload for invite mail,
+/// attachments as (meta, remote id, Content-ID, cached text)).
 pub type MsgRow = (
     Message,
+    Option<String>,
     Option<String>,
     Option<String>,
     Vec<(Attachment, Option<String>, Option<String>, Option<String>)>,
@@ -657,7 +692,7 @@ pub fn upsert_thread(
     .map_err(|e| e.to_string())?;
 
     let mut any_healed = false;
-    for (m, rfc_id, list_unsub, atts) in msgs {
+    for (m, rfc_id, list_unsub, ics, atts) in msgs {
         // The current body tells us (a) new vs. existing and (b) whether this
         // upsert heals a previously empty/frozen body — which the search index
         // must then be told about (its per-message insert only fires for new rows).
@@ -668,8 +703,8 @@ pub fn upsert_thread(
         conn.execute(
             "INSERT INTO messages (id, thread_id, from_addr, from_name, to_addrs, cc_addrs,
                                    subject, snippet, body_text, body_html, date, unread,
-                                   rfc_message_id, list_unsubscribe)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                                   rfc_message_id, list_unsubscribe, ics_data)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
              ON CONFLICT(id) DO UPDATE SET
                 unread=excluded.unread,
                 subject=excluded.subject,
@@ -678,6 +713,7 @@ pub fn upsert_thread(
                 cc_addrs=excluded.cc_addrs,
                 rfc_message_id=excluded.rfc_message_id,
                 list_unsubscribe=excluded.list_unsubscribe,
+                ics_data=COALESCE(excluded.ics_data, messages.ics_data),
                 -- Gmail message bodies are immutable, so a non-empty re-parse is
                 -- always the correct value. This heals rows an older build (or a
                 -- first sync that couldn't fetch the HTML) froze with NULL/empty
@@ -699,6 +735,7 @@ pub fn upsert_thread(
                 m.unread as i64,
                 rfc_id,
                 list_unsub,
+                ics,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -739,7 +776,7 @@ pub fn upsert_thread(
     if any_healed {
         conn.execute("DELETE FROM mail_fts WHERE thread_id = ?1", params![t.id])
             .map_err(|e| e.to_string())?;
-        for (m, _, _, _) in msgs {
+        for (m, _, _, _, _) in msgs {
             conn.execute(
                 "INSERT INTO mail_fts (thread_id, subject, from_text, body) VALUES (?1,?2,?3,?4)",
                 params![m.thread_id, m.subject, format!("{} {}", m.from_name, m.from), m.body_text],
@@ -839,6 +876,20 @@ pub fn muted_inbox_threads(conn: &Connection, account_id: &str) -> Vec<String> {
     stmt.query_map(params![account_id], |r| r.get(0))
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
+}
+
+/// Most recent iCalendar payload in a thread (invite detection). The newest
+/// invite wins — a reschedule or cancellation supersedes the original mail.
+pub fn thread_ics(conn: &Connection, thread_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT ics_data FROM messages
+         WHERE thread_id = ?1 AND ics_data IS NOT NULL
+         ORDER BY date DESC LIMIT 1",
+        params![thread_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
 }
 
 /// Most recent List-Unsubscribe header in a thread, if any message has one.
@@ -1389,70 +1440,199 @@ pub fn trashed_thread_ids(conn: &Connection, account_id: &str) -> Vec<String> {
 
 // ---------------------------------------------------------------- calendar
 
-/// Cached events overlapping [start_ms, end_ms), sorted by start.
+const EVENT_COLS: &str = "id, calendar_id, calendar, color, title, start_ms, end_ms, all_day, \
+     location, description, html_link, etag, status, organizer_email, organizer_self, \
+     recurring_event_id, hangout_link, attendees, access_role, ical_uid";
+
+fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<CalendarEvent> {
+    Ok(CalendarEvent {
+        id: r.get(0)?,
+        calendar_id: r.get(1)?,
+        calendar: r.get(2)?,
+        color: r.get(3)?,
+        title: r.get(4)?,
+        start_ms: r.get(5)?,
+        end_ms: r.get(6)?,
+        all_day: r.get::<_, i64>(7)? != 0,
+        location: r.get(8)?,
+        description: r.get(9)?,
+        html_link: r.get(10)?,
+        etag: r.get(11)?,
+        status: r.get(12)?,
+        organizer_email: r.get(13)?,
+        organizer_self: r.get::<_, i64>(14)? != 0,
+        recurring_event_id: r.get(15)?,
+        hangout_link: r.get(16)?,
+        attendees: serde_json::from_str(&r.get::<_, String>(17)?).unwrap_or_default(),
+        access_role: r.get(18)?,
+        ical_uid: r.get(19)?,
+    })
+}
+
+/// Rank a calendar privilege for cross-calendar dedup: the copy the user can
+/// act on (own calendar) beats a shared read-only copy of the same event.
+fn access_rank(role: &str) -> u8 {
+    match role {
+        "owner" => 0,
+        "writer" => 1,
+        "reader" => 2,
+        _ => 3,
+    }
+}
+
+/// Cached events overlapping [start_ms, end_ms), sorted by start. The same
+/// Google event id can be cached once per visible calendar (the attendee's
+/// copy + the organizer's shared calendar) — dedup to the most-privileged
+/// copy so the panel doesn't stack duplicates.
 pub fn list_events(
     conn: &Connection,
     account_id: &str,
     start_ms: i64,
     end_ms: i64,
 ) -> Vec<CalendarEvent> {
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT id, calendar, color, title, start_ms, end_ms, all_day, location
-         FROM events
+    let sql = format!(
+        "SELECT {EVENT_COLS} FROM events
          WHERE account_id = ?1 AND start_ms < ?3 AND end_ms > ?2
-         ORDER BY start_ms",
-    ) else {
+         ORDER BY start_ms"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
         return vec![];
     };
-    stmt.query_map(params![account_id, start_ms, end_ms], |r| {
-        Ok(CalendarEvent {
-            id: r.get(0)?,
-            calendar: r.get(1)?,
-            color: r.get(2)?,
-            title: r.get(3)?,
-            start_ms: r.get(4)?,
-            end_ms: r.get(5)?,
-            all_day: r.get::<_, i64>(6)? != 0,
-            location: r.get(7)?,
-        })
-    })
-    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_default()
+    let rows: Vec<CalendarEvent> = stmt
+        .query_map(params![account_id, start_ms, end_ms], row_to_event)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<CalendarEvent> = vec![];
+    for e in rows {
+        match index.get(&e.id) {
+            Some(&i) => {
+                if access_rank(&e.access_role) < access_rank(&out[i].access_role) {
+                    out[i] = e;
+                }
+            }
+            None => {
+                index.insert(e.id.clone(), out.len());
+                out.push(e);
+            }
+        }
+    }
+    out
 }
 
-/// Replace the cached events for one fetched window: everything overlapping
-/// the window is dropped, then the fresh listing is inserted.
-pub fn replace_events(
+/// One cached event by its calendar-scoped key.
+pub fn get_event(
     conn: &Connection,
     account_id: &str,
+    calendar_id: &str,
+    id: &str,
+) -> Option<CalendarEvent> {
+    let sql =
+        format!("SELECT {EVENT_COLS} FROM events WHERE account_id = ?1 AND calendar_id = ?2 AND id = ?3");
+    conn.query_row(&sql, params![account_id, calendar_id, id], row_to_event).ok()
+}
+
+/// Cached events carrying an RFC5545 UID — local fast path for invite-mail
+/// RSVP resolution (the remote iCalUID lookup is the fallback).
+pub fn events_by_ical_uid(conn: &Connection, account_id: &str, uid: &str) -> Vec<CalendarEvent> {
+    let sql = format!("SELECT {EVENT_COLS} FROM events WHERE account_id = ?1 AND ical_uid = ?2");
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return vec![];
+    };
+    stmt.query_map(params![account_id, uid], row_to_event)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn upsert_event(conn: &Connection, account_id: &str, e: &CalendarEvent) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO events
+            (account_id, calendar_id, id, calendar, color, title, start_ms, end_ms, all_day,
+             location, description, html_link, etag, status, organizer_email, organizer_self,
+             recurring_event_id, hangout_link, attendees, access_role, ical_uid)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+        params![
+            account_id,
+            e.calendar_id,
+            e.id,
+            e.calendar,
+            e.color,
+            e.title,
+            e.start_ms,
+            e.end_ms,
+            e.all_day as i64,
+            e.location,
+            e.description,
+            e.html_link,
+            e.etag,
+            e.status,
+            e.organizer_email,
+            e.organizer_self as i64,
+            e.recurring_event_id,
+            e.hangout_link,
+            serde_json::to_string(&e.attendees).map_err(|e| e.to_string())?,
+            e.access_role,
+            e.ical_uid,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn delete_event(
+    conn: &Connection,
+    account_id: &str,
+    calendar_id: &str,
+    id: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM events WHERE account_id = ?1 AND calendar_id = ?2 AND id = ?3",
+        params![account_id, calendar_id, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Replace ONE calendar's cached slice of a fetched window: everything of its
+/// rows overlapping the window is dropped, then the fresh listing lands. Used
+/// by the initial (windowed) sync and the 410 token-reset refetch; incremental
+/// sync upserts/deletes row-by-row instead.
+pub fn replace_calendar_window(
+    conn: &Connection,
+    account_id: &str,
+    calendar_id: &str,
     window_start: i64,
     window_end: i64,
     events: &[CalendarEvent],
 ) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM events WHERE account_id = ?1 AND start_ms < ?3 AND end_ms > ?2",
-        params![account_id, window_start, window_end],
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM events
+         WHERE account_id = ?1 AND calendar_id = ?2 AND start_ms < ?4 AND end_ms > ?3",
+        params![account_id, calendar_id, window_start, window_end],
     )
     .map_err(|e| e.to_string())?;
     for e in events {
-        conn.execute(
-            "INSERT OR REPLACE INTO events
-                (account_id, id, calendar, color, title, start_ms, end_ms, all_day, location)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                account_id,
-                e.id,
-                e.calendar,
-                e.color,
-                e.title,
-                e.start_ms,
-                e.end_ms,
-                e.all_day as i64,
-                e.location
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+        upsert_event(&tx, account_id, e)?;
     }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Drop every cached event for calendars that vanished from calendarList
+/// (unsubscribed / deleted), so they stop painting forever.
+pub fn retain_calendars(
+    conn: &Connection,
+    account_id: &str,
+    calendar_ids: &[String],
+) -> Result<(), String> {
+    let keep = serde_json::to_string(calendar_ids).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM events
+         WHERE account_id = ?1
+           AND calendar_id NOT IN (SELECT value FROM json_each(?2))",
+        params![account_id, keep],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
