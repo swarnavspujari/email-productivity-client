@@ -13,7 +13,7 @@ Routing at a glance:
 | Bug | Task | Model | Effort |
 |-----|------|-------|--------|
 | 5 | Search: full-history index + ranking + natural-language | **Fable 5** | `xhigh` | ✅ **shipped to `main` 2026-07-09** |
-| 5·P4 | Search: semantic / vector tier (hybrid with bm25) | **Fable 5** | `xhigh` | prompt below |
+| 5·P4 | Search: semantic / vector tier (hybrid with bm25) | **Fable 5** | `xhigh` | ✅ **built 2026-07-09** on `claude/fission-search-ranking-e6cbfd` |
 | 6 | Remind-me natural-language parsing + timezone abbrev | **Opus 4.8** | `high` |
 | 7B | Calendar event create as a side panel (not a popup) | **Opus 4.8** | `xhigh` |
 | 12 | Auto Google Meet on invites with guests | **Opus 4.8** | `high` |
@@ -244,6 +244,18 @@ and it's a fragile heuristic — treat it as opt-in polish, not a bug fix:
 ---
 
 ## Phase 4 — Semantic / vector search (the deferred tier, now scheduled)
+
+> **STATUS — built 2026-07-09 on branch `claude/fission-search-ranking-e6cbfd` (DECISIONS #105–108).**
+> sqlite-vec 0.1.9 statically linked (`mail_vec` vec0 + `vec_meta` bookkeeping), lazy
+> fastembed `bge-small-en-v1.5-q` (384-dim, ~65 MB cache, ORT statically linked — no
+> DLL to bundle), embed beats riding the crawl spawn, RRF hybrid in
+> `store::search_planned` (qvec=None ≡ old lexical path), optional OpenAI remote
+> embeddings setting, concept-group demo stand-in in both mocks (Rust demo goes
+> through the real vec0+RRF pipeline). Verified: 28 lib tests incl. a real-model
+> download/ranking E2E; browser demo surfaces the Mercury wire-transfer fixture for
+> "invoice". **Owner E2E pending:** live-mailbox backfill convergence + CPU feel,
+> remote-embedding path with a real key, release-bundle size. Plan doc:
+> `docs/superpowers/plans/2026-07-09-search-phase4-semantic.md`.
 
 **Model: Claude Fable 5 · effort `xhigh`.** Genuinely hard, novel-integration, long-horizon: a
 new native dependency (an embedded vector store), a local embedding runtime, a DB migration, a
