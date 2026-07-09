@@ -118,6 +118,9 @@ export interface Settings {
   driveAutoUpload: "ask" | "always";
   /** Remembered share-on-send choice for linked Drive files. */
   driveShareMode: DriveShareMode;
+  /** Semantic-search embeddings: local ONNX model (default) or OpenAI
+   *  text-embedding-3-small via the stored OpenAI key. */
+  embeddings: "local" | "openai";
 }
 
 /** Which Google features this account's OAuth grant actually covers. Users

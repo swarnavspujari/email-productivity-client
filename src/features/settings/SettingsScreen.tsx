@@ -521,6 +521,25 @@ function AiTab() {
           ))}
         </div>
       </Section>
+      <Section
+        title="Semantic search"
+        hint="Vector search finds meaning, not just words — 'invoice' matches a wire-transfer receipt. Local keeps mail on-device and works offline; the model (~34 MB) downloads in the background on first use."
+      >
+        <select
+          className={inputCls}
+          value={settings.embeddings}
+          onChange={(e) =>
+            void useSettings.getState().save({
+              embeddings: e.target.value as "local" | "openai",
+            })
+          }
+        >
+          <option value="local">Local model (private, offline)</option>
+          <option value="openai">
+            OpenAI text-embedding-3-small (uses your OpenAI key)
+          </option>
+        </select>
+      </Section>
     </>
   );
 }

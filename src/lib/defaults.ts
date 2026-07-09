@@ -161,6 +161,7 @@ export function defaultSettings(): Settings {
     undoSendSeconds: 10,
     driveAutoUpload: "ask",
     driveShareMode: "recipients",
+    embeddings: "local",
   };
 }
 

@@ -124,6 +124,72 @@ pub fn delete_thread_vectors(conn: &Connection, thread_id: &str) -> Result<(), S
     Ok(())
 }
 
+/// Message-level KNN over-fetch: threads have several messages, other
+/// accounts' rows are filtered after the scan, and narrowing (dates/people)
+/// trims further — so ask vec0 for far more than the thread limit.
+const KNN_K: usize = 240;
+
+/// Nearest threads to `qvec` for this account, best (smallest cosine
+/// distance over any message) first, honoring the plan's date window and
+/// people narrowing exactly like the lexical leg. Only the ORDER matters to
+/// the RRF fusion downstream, so plain SearchResults come back.
+pub fn knn_threads(
+    conn: &Connection,
+    qvec: &[f32],
+    account_id: &str,
+    plan: &crate::search::SearchPlan,
+    limit: usize,
+) -> Result<Vec<crate::types::SearchResult>, String> {
+    use rusqlite::types::Value;
+    let mut sql = String::from(
+        "SELECT vm.thread_id, t.subject, t.snippet, t.last_date, MIN(v.distance) AS d
+         FROM (SELECT rowid, distance FROM mail_vec WHERE embedding MATCH ? AND k = ?) v
+         JOIN vec_meta vm ON vm.vec_rowid = v.rowid
+         JOIN threads t ON t.id = vm.thread_id
+         WHERE vm.account_id = ? AND t.hidden IS NULL",
+    );
+    let mut params_v: Vec<Value> = vec![
+        Value::Blob(vec_to_blob(qvec)),
+        Value::Integer(KNN_K as i64),
+        Value::Text(account_id.to_string()),
+    ];
+    if let Some(ms) = plan.after {
+        sql.push_str(" AND t.last_date >= ?");
+        params_v.push(Value::Integer(ms));
+    }
+    if let Some(ms) = plan.before {
+        sql.push_str(" AND t.last_date < ?");
+        params_v.push(Value::Integer(ms));
+    }
+    for p in &plan.people {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id
+               AND (m.from_addr LIKE ? ESCAPE '\\' OR m.from_name LIKE ? ESCAPE '\\'
+                    OR m.to_addrs LIKE ? ESCAPE '\\' OR m.cc_addrs LIKE ? ESCAPE '\\'))",
+        );
+        let pat = super::like_pattern(p);
+        for _ in 0..4 {
+            params_v.push(Value::Text(pat.clone()));
+        }
+    }
+    sql.push_str(" GROUP BY vm.thread_id ORDER BY d ASC LIMIT ?");
+    params_v.push(Value::Integer(limit as i64));
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params_v), |r| {
+            Ok(crate::types::SearchResult {
+                thread_id: r.get(0)?,
+                subject: r.get(1)?,
+                snippet: r.get(2)?,
+                last_date: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 /// mail_vec rows are only comparable to queries embedded by the SAME model.
 /// On a tag change (local↔remote flip, model bump) wipe every non-demo
 /// vector so the backfill rebuilds; demo fixtures keep their hand vectors.

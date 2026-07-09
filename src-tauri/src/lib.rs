@@ -1,6 +1,7 @@
 //! Fission Mail core: IPC surface, app state, and the background loop.
 //! Every command validates its inputs; every secret stays in the keychain.
 mod ai;
+mod embed;
 mod harper;
 mod mail;
 mod search;
@@ -19,7 +20,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use types::*;
 
 pub struct AppState {
-    db: Mutex<Connection>,
+    /// Arc so the blocking embed beat can own a handle across threads;
+    /// everything else keeps calling state.db.lock() through the deref.
+    db: Arc<Mutex<Connection>>,
     http: reqwest::Client,
     /// One live session per connected Gmail account, keyed by email.
     gmail: tokio::sync::Mutex<HashMap<String, GmailSession>>,
@@ -32,6 +35,10 @@ pub struct AppState {
     /// Overlap guard for the history crawl: a throttled beat can outlast the
     /// 30s sync tick, and later ticks must skip instead of stacking beats.
     crawl_busy: AtomicBool,
+    /// App data dir (model cache lives under it).
+    data_dir: std::path::PathBuf,
+    /// Lazy local embedding model for semantic search.
+    embedder: tokio::sync::Mutex<embed::Slot>,
 }
 
 struct DriveUpload {
@@ -1487,10 +1494,44 @@ fn sync_in_background(app: AppHandle) {
     });
 }
 
+/// Ready → clone; Idle/stale-Failed → load (blocking thread; the first run
+/// downloads the model); fresh-Failed → None (backoff). Holding the slot
+/// lock across the load also serializes concurrent init attempts.
+async fn ensure_local_embedder(state: &AppState) -> Option<embed::SharedModel> {
+    let mut slot = state.embedder.lock().await;
+    match &*slot {
+        embed::Slot::Ready(m) => Some(m.clone()),
+        embed::Slot::Failed { at_ms } if now_ms() - at_ms < embed::RETRY_AFTER_MS => None,
+        _ => {
+            let dir = state.data_dir.join("models");
+            match tauri::async_runtime::spawn_blocking(move || embed::load_local(dir)).await {
+                Ok(Ok(m)) => {
+                    let m: embed::SharedModel = Arc::new(std::sync::Mutex::new(m));
+                    *slot = embed::Slot::Ready(m.clone());
+                    eprintln!("[embed] local model ready");
+                    Some(m)
+                }
+                other => {
+                    let err = match other {
+                        Ok(Err(e)) => e,
+                        Err(e) => e.to_string(),
+                        Ok(Ok(_)) => unreachable!(),
+                    };
+                    eprintln!("[embed] local model unavailable: {err}");
+                    *slot = embed::Slot::Failed { at_ms: now_ms() };
+                    None
+                }
+            }
+        }
+    }
+}
+
 /// One history-crawl beat (a single listing page per account), spawned off
 /// the sync loop so a throttled beat never delays the 30s sync cadence. No
 /// mail:updated is emitted — the crawl surfaces old mail, and search reads
-/// the DB directly on the next keystroke.
+/// the DB directly on the next keystroke. The same beat then embeds a slice
+/// of whatever the crawl/sync landed (semantic indexing shares the
+/// busy-guard, so beats never stack).
 fn spawn_history_crawl(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
@@ -1532,6 +1573,40 @@ fn spawn_history_crawl(app: AppHandle) {
                     if b.done { "; full history indexed" } else { "" }
                 ),
                 Err(e) => eprintln!("[crawl:{email}] {e}"),
+            }
+            // Semantic indexing: embed whatever the crawl/sync landed. Local
+            // model by default; the optional remote provider when configured.
+            let embeddings_mode = {
+                let conn = state.db.lock().unwrap();
+                store::get_settings(&conn).embeddings
+            };
+            if embeddings_mode == "openai" {
+                let remote = {
+                    let conn = state.db.lock().unwrap();
+                    ai::resolve(&store::get_settings(&conn), Some("openai")).ok()
+                };
+                if let Some(p) = remote {
+                    match mail::sync::embed_step_remote(&state.http, &state.db, &email, &p.base_url, &p.key).await {
+                        Ok(b) if b.embedded > 0 => eprintln!("[embed:{email}] +{} embedded (remote), {} to go", b.embedded, b.remaining),
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[embed:{email}] {e}"),
+                    }
+                }
+            } else if let Some(m) = ensure_local_embedder(&state).await {
+                let db = state.db.clone();
+                let email2 = email.clone();
+                let beat = tauri::async_runtime::spawn_blocking(move || {
+                    mail::sync::embed_step(&db, &email2, embed::LOCAL_TAG, &|texts| {
+                        embed::embed_passages(&m, texts)
+                    })
+                })
+                .await;
+                match beat {
+                    Ok(Ok(b)) if b.embedded > 0 => eprintln!("[embed:{email}] +{} embedded, {} to go", b.embedded, b.remaining),
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => eprintln!("[embed:{email}] {e}"),
+                    Err(e) => eprintln!("[embed:{email}] task: {e}"),
+                }
             }
         }
         state.crawl_busy.store(false, Ordering::SeqCst);
@@ -2108,6 +2183,47 @@ fn search_threads(state: State<'_, AppState>, query: String) -> Result<Vec<Searc
     store::search(&conn, &query, &active)
 }
 
+/// Embed a search query, or None when semantic search isn't ready (model
+/// still downloading, no key, offline, or the embedder is mid-load — a
+/// search never waits on any of that).
+async fn query_vector(state: &State<'_, AppState>, text: &str) -> Option<Vec<f32>> {
+    let (mode, remote) = {
+        let conn = state.db.lock().unwrap();
+        let settings = store::get_settings(&conn);
+        let remote = if settings.embeddings == "openai" {
+            ai::resolve(&settings, Some("openai")).ok()
+        } else {
+            None
+        };
+        (settings.embeddings.clone(), remote)
+    };
+    if mode == "openai" {
+        let p = remote?;
+        let texts = vec![text.to_string()];
+        return tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            ai::openai::embed(&state.http, &p.base_url, &p.key, embed::REMOTE_MODEL, &texts, embed::DIM),
+        )
+        .await
+        .ok()?
+        .ok()?
+        .pop();
+    }
+    // local: use a ready model; never load/download on the search path
+    let m = match state.embedder.try_lock() {
+        Ok(slot) => match &*slot {
+            embed::Slot::Ready(m) => m.clone(),
+            _ => return None,
+        },
+        Err(_) => return None,
+    };
+    let text = text.to_string();
+    tauri::async_runtime::spawn_blocking(move || embed::embed_query(&m, &text).ok())
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Full-history search: plan the query (AI for natural language when a
 /// provider is configured, deterministic otherwise), run the planned local
 /// search, then a live Gmail pass so mail older than the local cache is
@@ -2151,9 +2267,20 @@ async fn search_all(
     }
     let ai_planned = plan.is_some();
     let plan = plan.unwrap_or_else(|| search::parse_deterministic(&query));
+    // One query embedding per search (never per keystroke — the instant
+    // search_threads path stays lexical-only). Demo accounts use the toy
+    // concept embedder; real accounts an already-ready local model or the
+    // remote endpoint. Any failure = no semantic leg, lexical unchanged.
+    let qvec: Option<Vec<f32>> = if plan.terms.is_empty() {
+        None
+    } else if !is_gmail {
+        mail::mock::demo_embed(&plan.terms.join(" "))
+    } else {
+        query_vector(&state, &plan.terms.join(" ")).await
+    };
     let local = {
         let conn = state.db.lock().unwrap();
-        store::search_planned(&conn, &plan, &active)?
+        store::search_planned(&conn, &plan, &active, qvec.as_deref())?
     };
     if !is_gmail {
         return Ok(local); // demo mode has no server to reach past
@@ -3119,6 +3246,10 @@ pub fn run() {
                     let _ = store::save_accounts(&conn, &acc);
                 }
             }
+            // Semantic stand-in vectors for the demo fixtures — idempotent,
+            // covers fresh seeds and demo DBs that predate the vector tier;
+            // no-op when no demo messages exist.
+            mail::mock::ensure_demo_vectors(&conn).map_err(std::io::Error::other)?;
 
             // One-time notice for accounts whose grant predates the v0.12
             // scope expansion (no recorded granted_scopes): they need a single
@@ -3169,13 +3300,15 @@ pub fn run() {
                 .expect("http client");
 
             app.manage(AppState {
-                db: Mutex::new(conn),
+                db: Arc::new(Mutex::new(conn)),
                 http,
                 gmail: tokio::sync::Mutex::new(sessions),
                 cancels: Mutex::new(HashMap::new()),
                 drive_uploads: Mutex::new(HashMap::new()),
                 drive_upload_seq: std::sync::atomic::AtomicU64::new(1),
                 crawl_busy: AtomicBool::new(false),
+                data_dir: data_dir.clone(),
+                embedder: tokio::sync::Mutex::new(embed::Slot::Idle),
             });
 
             // Dev-only: FISSION_AI_SMOKE=1 streams one real draft at startup and

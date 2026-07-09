@@ -128,6 +128,66 @@ pub async fn complete(
         .to_string())
 }
 
+/// OpenAI-compatible /embeddings — the optional remote path for semantic
+/// search. `dimensions` matches the mail_vec schema (text-embedding-3-*
+/// truncate server-side, Matryoshka-style).
+pub async fn embed(
+    http: &reqwest::Client,
+    base: &str,
+    key: &str,
+    model: &str,
+    texts: &[String],
+    dimensions: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    let url = format!("{}/embeddings", base.trim_end_matches('/'));
+    let body = json!({ "model": model, "input": texts, "dimensions": dimensions });
+    let resp = http
+        .post(&url)
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "embedding request failed (network)".to_string())?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|_| "embedding provider returned an unexpected response".to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "embedding API error ({status}): {}",
+            v["error"]["message"].as_str().unwrap_or("?")
+        ));
+    }
+    let mut out: Vec<(i64, Vec<f32>)> = v["data"]
+        .as_array()
+        .ok_or("embedding response had no data")?
+        .iter()
+        .map(|d| {
+            let idx = d["index"].as_i64().unwrap_or(0);
+            let e: Vec<f32> = d["embedding"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_f64()).map(|f| f as f32).collect())
+                .unwrap_or_default();
+            (idx, e)
+        })
+        .collect();
+    out.sort_by_key(|(i, _)| *i);
+    // normalize defensively so cosine==L2 holds regardless of provider
+    Ok(out
+        .into_iter()
+        .map(|(_, mut e)| {
+            let n = e.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if n > 0.0 {
+                for x in &mut e {
+                    *x /= n;
+                }
+            }
+            e
+        })
+        .collect())
+}
+
 pub async fn test(
     http: &reqwest::Client,
     base: &str,

@@ -160,6 +160,42 @@ function loadPersisted(): PersistedState {
   return fresh;
 }
 
+// Mirrors CONCEPT_GROUPS in src-tauri/src/mail/mock.rs — the demos'
+// semantic stand-in. Keep the two lists identical.
+const CONCEPT_GROUPS: string[][] = [
+  ["invoice", "invoices", "bill", "bills", "billing", "receipt", "receipts", "payment", "payments", "paid", "wire", "wired", "transfer", "refund"],
+  ["meeting", "meet", "call", "sync", "calendar", "schedule", "reschedule", "invite", "invitation", "agenda"],
+  ["deck", "decks", "slides", "presentation", "pitch"],
+  ["contract", "agreement", "terms", "term", "sheet", "legal", "counsel", "redline", "signature"],
+  ["hire", "hiring", "candidate", "candidates", "recruit", "recruiting", "interview", "offer", "shortlist", "role"],
+  ["budget", "burn", "runway", "spend", "cost", "costs", "expenses", "finance"],
+  ["flight", "flights", "travel", "hotel", "trip", "itinerary", "booking"],
+  ["bug", "bugs", "issue", "error", "crash", "ci", "build", "failed", "fix"],
+  ["investor", "investors", "fund", "lp", "fundraise", "series", "valuation", "portfolio"],
+  ["launch", "release", "ship", "shipping", "beta", "announcement"],
+];
+
+/** Toy embedding over concept groups; null = no concept words. */
+function demoVec(text: string): number[] | null {
+  const v = new Array(CONCEPT_GROUPS.length).fill(0);
+  let any = false;
+  for (const w of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (!w) continue;
+    CONCEPT_GROUPS.forEach((group, i) => {
+      if (group.includes(w)) {
+        v[i] += 1;
+        any = true;
+      }
+    });
+  }
+  if (!any) return null;
+  const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+  return v.map((x) => x / norm);
+}
+
+const cosSim = (a: number[], b: number[]) =>
+  a.reduce((s, x, i) => s + x * b[i], 0);
+
 export class MockBackend implements Backend {
   private threads: Thread[];
   private messages: Map<string, Message[]>;
@@ -604,10 +640,51 @@ export class MockBackend implements Backend {
       .sort((a, b) => b.score - a.score || b.r.lastDate - a.r.lastDate)
       .map((h) => h.r);
   }
-  // Demo has no server past the fixtures, so full-history search == local
-  // search and there's nothing older to page in.
+  // Demo has no server past the fixtures, so the "all mail" pass adds the
+  // semantic leg instead: toy concept vectors + the same RRF fusion as the
+  // Rust core. The instant search() stays lexical-only, like search_threads.
   async searchAll(query: string): Promise<SearchResult[]> {
-    return this.search(query);
+    const lexical = await this.search(query);
+    const { terms } = this.parseQuery(query);
+    const q = terms.length ? demoVec(terms.join(" ")) : null;
+    if (!q) return lexical;
+    const vhits: { r: SearchResult; d: number }[] = [];
+    for (const t of this.threads.filter((t) => this.inActiveAccount(t))) {
+      const msgs = this.messages.get(t.id) ?? [];
+      const v = demoVec(
+        `${t.subject}\n${msgs.map((m) => m.bodyText).join("\n")}`
+      );
+      if (!v) continue;
+      const sim = cosSim(q, v);
+      if (sim <= 0) continue;
+      vhits.push({
+        r: {
+          threadId: t.id,
+          subject: t.subject,
+          snippet: t.snippet,
+          lastDate: t.lastDate,
+        },
+        d: 1 - sim,
+      });
+    }
+    vhits.sort((a, b) => a.d - b.d);
+    vhits.length = Math.min(vhits.length, 20); // VEC_LEG_LIMIT, as in the core
+    // Reciprocal Rank Fusion, k=60 — keep in step with store::rrf_fuse: each
+    // leg contributes 1/(60+rank), so dual-leg (exact) hits stay on top and
+    // semantic-only neighbors extend recall below them.
+    const K = 60;
+    const fused = new Map<string, { s: number; r: SearchResult }>();
+    lexical.forEach((r, i) => fused.set(r.threadId, { s: 1 / (K + 1 + i), r }));
+    vhits.forEach(({ r }, i) => {
+      const s = 1 / (K + 1 + i);
+      const e = fused.get(r.threadId);
+      if (e) e.s += s;
+      else fused.set(r.threadId, { s, r });
+    });
+    return [...fused.values()]
+      .sort((a, b) => b.s - a.s || b.r.lastDate - a.r.lastDate)
+      .map((e) => e.r)
+      .slice(0, 60);
   }
   async loadOlder(): Promise<number> {
     return 0;

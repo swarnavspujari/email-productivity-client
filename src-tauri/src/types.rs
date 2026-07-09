@@ -113,6 +113,11 @@ pub struct Settings {
     /// Remembered share-on-send choice: "recipients" | "anyone" | "none".
     #[serde(default = "default_drive_share_mode")]
     pub drive_share_mode: String,
+    /// Semantic-search embeddings: "local" (bundled ONNX model, default) or
+    /// "openai" (text-embedding-3-small via the stored OpenAI key —
+    /// Anthropic has no embeddings API, so remote is never Claude).
+    #[serde(default = "default_embeddings")]
+    pub embeddings: String,
 }
 
 fn default_theme() -> String {
@@ -133,6 +138,10 @@ fn default_drive_auto_upload() -> String {
 
 fn default_drive_share_mode() -> String {
     "recipients".into()
+}
+
+fn default_embeddings() -> String {
+    "local".into()
 }
 
 /// Which Google features this account's OAuth grant actually covers.

@@ -615,3 +615,101 @@ pub fn seed_if_empty(conn: &Connection) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Hand-curated concept groups — the demos' semantic stand-in (mirrored in
+/// src/lib/mock.ts; keep the two lists identical). Each group is one
+/// dimension of a toy embedding: enough for "invoice" to surface the
+/// wire-transfer fixture through the REAL vec0-KNN + RRF pipeline, with no
+/// model runtime in the demo.
+const CONCEPT_GROUPS: &[&[&str]] = &[
+    &["invoice", "invoices", "bill", "bills", "billing", "receipt", "receipts", "payment", "payments", "paid", "wire", "wired", "transfer", "refund"],
+    &["meeting", "meet", "call", "sync", "calendar", "schedule", "reschedule", "invite", "invitation", "agenda"],
+    &["deck", "decks", "slides", "presentation", "pitch"],
+    &["contract", "agreement", "terms", "term", "sheet", "legal", "counsel", "redline", "signature"],
+    &["hire", "hiring", "candidate", "candidates", "recruit", "recruiting", "interview", "offer", "shortlist", "role"],
+    &["budget", "burn", "runway", "spend", "cost", "costs", "expenses", "finance"],
+    &["flight", "flights", "travel", "hotel", "trip", "itinerary", "booking"],
+    &["bug", "bugs", "issue", "error", "crash", "ci", "build", "failed", "fix"],
+    &["investor", "investors", "fund", "lp", "fundraise", "series", "valuation", "portfolio"],
+    &["launch", "release", "ship", "shipping", "beta", "announcement"],
+];
+
+/// Toy embedding: normalized bag-of-concept-groups, padded to the real
+/// vector width so demo rows share the mail_vec table. None = no concept
+/// words (a query like "roadmap" gets no semantic leg in the demo).
+pub fn demo_embed(text: &str) -> Option<Vec<f32>> {
+    let lower = text.to_lowercase();
+    let mut v = vec![0f32; crate::embed::DIM];
+    let mut any = false;
+    for w in lower.split(|c: char| !c.is_alphanumeric()) {
+        if w.is_empty() {
+            continue;
+        }
+        for (i, group) in CONCEPT_GROUPS.iter().enumerate() {
+            if group.contains(&w) {
+                v[i] += 1.0;
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    for x in &mut v {
+        *x /= norm;
+    }
+    Some(v)
+}
+
+/// Give every demo message a toy vector (or a skip marker) — idempotent, so
+/// it covers fresh seeds AND demo DBs that predate the semantic tier.
+pub fn ensure_demo_vectors(conn: &Connection) -> Result<(), String> {
+    for account in [store::DEMO_ACCOUNT, store::DEMO_ACCOUNT_2] {
+        for (mid, tid, text) in store::vec::missing(conn, account, 10_000)? {
+            match demo_embed(&text) {
+                Some(v) => store::vec::insert(conn, &mid, &tid, account, "demo", &v)?,
+                None => store::vec::mark_skipped(conn, &mid, &tid, account, "demo")?,
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_semantic_search_finds_wire_receipt_for_invoice() {
+        let conn = store::open(std::path::Path::new(":memory:")).unwrap();
+        seed_if_empty(&conn).unwrap();
+        ensure_demo_vectors(&conn).unwrap();
+        let q = demo_embed("invoice").expect("concept word");
+        let plan = crate::search::SearchPlan { terms: vec!["invoice".into()], ..Default::default() };
+        // lexical-only misses the Mercury wire-transfer fixture…
+        let lexical = store::search_planned(&conn, &plan, store::DEMO_ACCOUNT, None).unwrap();
+        assert!(!lexical.iter().any(|r| r.thread_id == "t-wire-receipt"));
+        // …the hybrid surfaces it through real vec0 KNN + RRF.
+        let hybrid =
+            store::search_planned(&conn, &plan, store::DEMO_ACCOUNT, Some(&q)).unwrap();
+        assert!(
+            hybrid.iter().any(|r| r.thread_id == "t-wire-receipt"),
+            "semantic recall missing: {:?}",
+            hybrid.iter().map(|r| r.thread_id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ensure_demo_vectors_is_idempotent_and_covers_all_messages() {
+        let conn = store::open(std::path::Path::new(":memory:")).unwrap();
+        seed_if_empty(&conn).unwrap();
+        ensure_demo_vectors(&conn).unwrap();
+        let missing = store::vec::count_missing(&conn, store::DEMO_ACCOUNT).unwrap()
+            + store::vec::count_missing(&conn, store::DEMO_ACCOUNT_2).unwrap();
+        assert_eq!(missing, 0, "every demo message embedded or skip-marked");
+        let embedded = store::vec::count_embedded(&conn, store::DEMO_ACCOUNT).unwrap();
+        ensure_demo_vectors(&conn).unwrap(); // second run: no change, no error
+        assert_eq!(store::vec::count_embedded(&conn, store::DEMO_ACCOUNT).unwrap(), embedded);
+    }
+}

@@ -590,6 +590,133 @@ pub async fn crawl_step(
     Ok(beat)
 }
 
+// ------------------------------------------------------------------ embed
+//
+// Semantic indexing rides the same background cadence as the crawl: every
+// beat embeds a few batches of messages that have no vector yet (newest
+// first), so it backfills existing mail AND keeps up with new mail through
+// one mechanism. Inference runs on the caller's blocking thread; the DB
+// lock is held only around short reads and batched writes.
+
+pub const EMBED_BATCH: usize = 32;
+/// Per-beat wall-clock budget: a beat embeds until this runs out, so a cold
+/// 50k-message backfill converges in hours without ever pinning the CPU.
+const EMBED_BEAT_BUDGET_MS: u128 = 4_000;
+
+pub struct EmbedBeat {
+    pub embedded: usize,
+    pub remaining: i64,
+}
+
+/// Write one embedded batch inside a transaction (a crash mid-batch must
+/// not leave vec_meta/mail_vec half-paired).
+fn write_batch(
+    conn: &Connection,
+    batch: &[(String, String, String)],
+    vecs: &[Vec<f32>],
+    account_id: &str,
+    model_tag: &str,
+) -> Result<(), String> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+    let write = (|| -> Result<(), String> {
+        for ((mid, tid, _), v) in batch.iter().zip(vecs) {
+            store::vec::insert(conn, mid, tid, account_id, model_tag, v)?;
+        }
+        Ok(())
+    })();
+    match write {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(|e| e.to_string()),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// One local-model beat. Blocking (model inference) — call on a blocking
+/// thread. `embed` maps texts → normalized vectors (the fastembed closure).
+pub fn embed_step(
+    db: &std::sync::Mutex<Connection>,
+    account_id: &str,
+    model_tag: &str,
+    embed: &dyn Fn(Vec<String>) -> Result<Vec<Vec<f32>>, String>,
+) -> Result<EmbedBeat, String> {
+    let start = std::time::Instant::now();
+    {
+        let conn = db.lock().unwrap();
+        store::vec::ensure_model_tag(&conn, model_tag)?;
+    }
+    let mut embedded = 0usize;
+    while start.elapsed().as_millis() < EMBED_BEAT_BUDGET_MS {
+        let batch = {
+            let conn = db.lock().unwrap();
+            store::vec::missing(&conn, account_id, EMBED_BATCH)?
+        };
+        if batch.is_empty() {
+            break;
+        }
+        let texts: Vec<String> = batch.iter().map(|(_, _, t)| t.clone()).collect();
+        let vecs = embed(texts)?;
+        {
+            let conn = db.lock().unwrap();
+            write_batch(&conn, &batch, &vecs, account_id, model_tag)?;
+        }
+        embedded += vecs.len();
+    }
+    let remaining = {
+        let conn = db.lock().unwrap();
+        store::vec::count_missing(&conn, account_id)?
+    };
+    Ok(EmbedBeat { embedded, remaining })
+}
+
+/// The remote flavor (settings.embeddings = "openai"): same loop, awaited
+/// HTTP embedding instead of local inference. Kept separate because the
+/// closure-driven local path must stay synchronous for spawn_blocking.
+pub async fn embed_step_remote(
+    http: &reqwest::Client,
+    db: &std::sync::Mutex<Connection>,
+    account_id: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<EmbedBeat, String> {
+    let start = std::time::Instant::now();
+    {
+        let conn = db.lock().unwrap();
+        store::vec::ensure_model_tag(&conn, crate::embed::REMOTE_TAG)?;
+    }
+    let mut embedded = 0usize;
+    while start.elapsed().as_millis() < EMBED_BEAT_BUDGET_MS {
+        let batch = {
+            let conn = db.lock().unwrap();
+            store::vec::missing(&conn, account_id, EMBED_BATCH)?
+        };
+        if batch.is_empty() {
+            break;
+        }
+        let texts: Vec<String> = batch.iter().map(|(_, _, t)| t.clone()).collect();
+        let vecs = crate::ai::openai::embed(
+            http,
+            base_url,
+            key,
+            crate::embed::REMOTE_MODEL,
+            &texts,
+            crate::embed::DIM,
+        )
+        .await?;
+        {
+            let conn = db.lock().unwrap();
+            write_batch(&conn, &batch, &vecs, account_id, crate::embed::REMOTE_TAG)?;
+        }
+        embedded += vecs.len();
+    }
+    let remaining = {
+        let conn = db.lock().unwrap();
+        store::vec::count_missing(&conn, account_id)?
+    };
+    Ok(EmbedBeat { embedded, remaining })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,5 +766,66 @@ mod tests {
         reanchor(&mut fresh);
         assert_eq!(fresh.anchor, None);
         assert_eq!(fresh.page_token, None);
+    }
+
+    const ACCT: &str = "acct@x.test";
+
+    fn seed(conn: &Connection, id: &str, subject: &str, body: &str, date: i64) {
+        let t = Thread {
+            id: id.into(),
+            subject: subject.into(),
+            snippet: body.chars().take(50).collect(),
+            participants: vec!["Ann".into()],
+            message_count: 1,
+            last_date: date,
+            unread: false,
+            starred: false,
+            labels: vec![],
+            in_inbox: true,
+            snoozed_until: None,
+        };
+        let m = Message {
+            id: format!("{id}-m1"),
+            thread_id: id.into(),
+            from: "ann@x.test".into(),
+            from_name: "Ann".into(),
+            to: vec!["you@x.test".into()],
+            cc: vec![],
+            subject: subject.into(),
+            snippet: String::new(),
+            body_text: body.into(),
+            body_html: None,
+            date,
+            unread: false,
+            attachments: vec![],
+        };
+        store::upsert_thread(conn, ACCT, &t, &[(m, None, None, None, vec![])]).unwrap();
+    }
+
+    #[test]
+    fn embed_step_converges_to_full_coverage_and_stops() {
+        let conn = store::open(std::path::Path::new(":memory:")).unwrap();
+        for i in 0..5 {
+            seed(&conn, &format!("t-{i}"), "Subject", "body words", 1_000 + i);
+        }
+        let db = std::sync::Mutex::new(conn);
+        let fake = |texts: Vec<String>| -> Result<Vec<Vec<f32>>, String> {
+            Ok(texts
+                .iter()
+                .map(|_| {
+                    let mut v = vec![0f32; 384];
+                    v[0] = 1.0;
+                    v
+                })
+                .collect())
+        };
+        let b1 = embed_step(&db, ACCT, "test", &fake).unwrap();
+        assert_eq!(b1.embedded, 5);
+        assert_eq!(b1.remaining, 0);
+        // second beat: nothing left — already-embedded rows are skipped
+        let b2 = embed_step(&db, ACCT, "test", &fake).unwrap();
+        assert_eq!(b2.embedded, 0);
+        let conn = db.lock().unwrap();
+        assert_eq!(store::vec::count_embedded(&conn, ACCT).unwrap(), 5);
     }
 }

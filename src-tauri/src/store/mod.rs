@@ -450,6 +450,7 @@ pub fn default_settings() -> Settings {
         undo_send_seconds: 10,
         drive_auto_upload: "ask".into(),
         drive_share_mode: "recipients".into(),
+        embeddings: "local".into(),
     }
 }
 
@@ -1697,9 +1698,10 @@ pub fn list_labels(conn: &Connection) -> Result<Vec<String>, String> {
 }
 
 /// Instant local search: deterministic operator-aware parse, then the
-/// planned query below.
+/// planned query below. Always lexical-only (no query vector) — this runs
+/// per keystroke; the semantic leg is search_all's one-per-search job.
 pub fn search(conn: &Connection, query: &str, account_id: &str) -> Result<Vec<SearchResult>, String> {
-    search_planned(conn, &crate::search::parse_deterministic(query), account_id)
+    search_planned(conn, &crate::search::parse_deterministic(query), account_id, None)
 }
 
 /// FTS5 match expression from planned terms: single terms as quoted prefix
@@ -1729,7 +1731,7 @@ fn fts_match_expr(terms: &[String]) -> Option<String> {
 }
 
 /// Escape LIKE wildcards in user text; pair with ESCAPE '\'.
-fn like_pattern(needle: &str) -> String {
+pub(crate) fn like_pattern(needle: &str) -> String {
     let mut esc = String::with_capacity(needle.len() + 2);
     for c in needle.chars() {
         if c == '\\' || c == '%' || c == '_' {
@@ -1740,8 +1742,62 @@ fn like_pattern(needle: &str) -> String {
     format!("%{esc}%")
 }
 
+/// Cap on vector-leg threads folded into a fused result: bounds the
+/// "semantically-nearest" tail a query can pull in past its exact matches
+/// (brute-force KNN always returns k rows, however weak the neighbors).
+const VEC_LEG_LIMIT: usize = 20;
+
+fn run_search_sql(
+    conn: &Connection,
+    sql: &str,
+    params_v: Vec<rusqlite::types::Value>,
+) -> Result<Vec<SearchResult>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    // Collect row errors instead of swallowing them: a step-time SQL error
+    // must surface as a failed search, never as silently-empty results.
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params_v), |r| {
+            Ok(SearchResult {
+                thread_id: r.get(0)?,
+                subject: r.get(1)?,
+                snippet: r.get(2)?,
+                last_date: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Reciprocal Rank Fusion (k=60). Each leg contributes 1/(60+rank); a
+/// thread on both legs sums them, so an exact-term hit always outranks the
+/// same-rank semantic-only neighbor — the vector leg extends recall below
+/// the exact matches instead of displacing them. Ties fall back to recency.
+fn rrf_fuse(lexical: Vec<SearchResult>, vector: Vec<SearchResult>) -> Vec<SearchResult> {
+    const RRF_K: f64 = 60.0;
+    let mut fused: HashMap<String, (f64, SearchResult)> = HashMap::new();
+    for (i, r) in lexical.into_iter().enumerate() {
+        fused.insert(r.thread_id.clone(), (1.0 / (RRF_K + 1.0 + i as f64), r));
+    }
+    for (i, r) in vector.into_iter().enumerate() {
+        let s = 1.0 / (RRF_K + 1.0 + i as f64);
+        fused.entry(r.thread_id.clone()).and_modify(|e| e.0 += s).or_insert((s, r));
+    }
+    let mut out: Vec<(f64, SearchResult)> = fused.into_values().collect();
+    out.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1.last_date.cmp(&a.1.last_date))
+    });
+    out.into_iter().map(|(_, r)| r).take(60).collect()
+}
+
 /// Routed local search over a parsed plan:
-/// - terms → bm25-ranked FTS (with people/date narrowing);
+/// - terms → bm25-ranked FTS (with people/date narrowing), fused with a
+///   vector-KNN leg by RRF when a query embedding is supplied — qvec = None
+///   (model absent, still downloading, or per-keystroke path) degrades to
+///   exactly the lexical behavior;
 /// - people only → that contact's threads, from-matches (they wrote) above
 ///   to-matches (user wrote to them), most recent first;
 /// - dates only → the window, most recent first.
@@ -1749,6 +1805,7 @@ pub fn search_planned(
     conn: &Connection,
     plan: &crate::search::SearchPlan,
     account_id: &str,
+    qvec: Option<&[f32]>,
 ) -> Result<Vec<SearchResult>, String> {
     use rusqlite::types::Value;
     if plan.is_empty() {
@@ -1757,8 +1814,10 @@ pub fn search_planned(
 
     let mut sql: String;
     let mut params_v: Vec<Value> = vec![];
+    let mut has_terms = false;
 
     if let Some(match_expr) = fts_match_expr(&plan.terms) {
+        has_terms = true;
         // bm25 is only valid directly inside the full-text query — SQLite
         // rejects it as an aggregate argument, and the query flattener
         // hoists it out of a plain subquery — so the MATERIALIZED CTE pins
@@ -1855,22 +1914,14 @@ pub fn search_planned(
         params_v.push(Value::Integer(plan.before.unwrap_or(i64::MAX)));
     }
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    // Collect row errors instead of swallowing them: a step-time SQL error
-    // must surface as a failed search, never as silently-empty results.
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(params_v), |r| {
-            Ok(SearchResult {
-                thread_id: r.get(0)?,
-                subject: r.get(1)?,
-                snippet: r.get(2)?,
-                last_date: r.get(3)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    Ok(rows)
+    let lexical = run_search_sql(conn, &sql, params_v)?;
+    if let (Some(q), true) = (qvec, has_terms) {
+        let vhits = vec::knn_threads(conn, q, account_id, plan, VEC_LEG_LIMIT)?;
+        if !vhits.is_empty() {
+            return Ok(rrf_fuse(lexical, vhits));
+        }
+    }
+    Ok(lexical)
 }
 
 /// One thread as a SearchResult (used to fold remote full-history matches in
@@ -2019,7 +2070,7 @@ mod tests {
         upsert_thread(&conn, ACCT, &t, &[(m, None, None, None, vec![])]).unwrap();
 
         let plan = crate::search::SearchPlan { people: vec!["maya".into()], ..Default::default() };
-        let hits = search_planned(&conn, &plan, ACCT).unwrap();
+        let hits = search_planned(&conn, &plan, ACCT, None).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].thread_id, "t-from");
         assert_eq!(hits[1].thread_id, "t-to");
@@ -2035,9 +2086,70 @@ mod tests {
             after: Some(4_000),
             ..Default::default()
         };
-        let hits = search_planned(&conn, &plan, ACCT).unwrap();
+        let hits = search_planned(&conn, &plan, ACCT, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].thread_id, "t-apr");
+    }
+
+    #[test]
+    fn hybrid_surfaces_semantic_match_lexical_misses() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        // "bill"/"receipt" body — the word "invoice" appears nowhere
+        seed(&conn, "t-bill", "Wire receipt", "your bill payment receipt is attached", "Mercury", 1_000);
+        seed(&conn, "t-noise", "Picnic", "sunny weather saturday", "Ann", 2_000);
+        // toy space: dim0 = money concept, dim1 = leisure
+        let mut money = vec![0f32; 384];
+        money[0] = 1.0;
+        let mut leisure = vec![0f32; 384];
+        leisure[1] = 1.0;
+        vec::insert(&conn, "t-bill-m1", "t-bill", ACCT, "test", &money).unwrap();
+        vec::insert(&conn, "t-noise-m1", "t-noise", ACCT, "test", &leisure).unwrap();
+        let plan = crate::search::SearchPlan { terms: vec!["invoice".into()], ..Default::default() };
+        // lexical alone: nothing
+        assert!(search_planned(&conn, &plan, ACCT, None).unwrap().is_empty());
+        // hybrid: the money-space thread surfaces first
+        let hits = search_planned(&conn, &plan, ACCT, Some(&money)).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].thread_id, "t-bill");
+    }
+
+    #[test]
+    fn exact_term_hits_stay_on_top_of_semantic_neighbors() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        seed(&conn, "t-exact", "Invoice April", "amount due", "Ann", 1_000);
+        seed(&conn, "t-sem", "Wire receipt", "payment receipt", "Mercury", 2_000);
+        let mut money = vec![0f32; 384];
+        money[0] = 1.0;
+        // BOTH threads sit in money-space; only t-exact contains the term
+        vec::insert(&conn, "t-exact-m1", "t-exact", ACCT, "test", &money).unwrap();
+        vec::insert(&conn, "t-sem-m1", "t-sem", ACCT, "test", &money).unwrap();
+        let plan = crate::search::SearchPlan { terms: vec!["invoice".into()], ..Default::default() };
+        let hits = search_planned(&conn, &plan, ACCT, Some(&money)).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].thread_id, "t-exact", "dual-leg must beat vector-only");
+        // and with no vector at all, behavior is exactly the old lexical path
+        let lex = search_planned(&conn, &plan, ACCT, None).unwrap();
+        assert_eq!(lex.len(), 1);
+        assert_eq!(lex[0].thread_id, "t-exact");
+    }
+
+    #[test]
+    fn knn_leg_honors_date_narrowing() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        seed(&conn, "t-in", "Wire receipt", "payment receipt", "Mercury", 5_000);
+        seed(&conn, "t-out", "Old wire", "payment receipt", "Mercury", 1_000);
+        let mut money = vec![0f32; 384];
+        money[0] = 1.0;
+        vec::insert(&conn, "t-in-m1", "t-in", ACCT, "test", &money).unwrap();
+        vec::insert(&conn, "t-out-m1", "t-out", ACCT, "test", &money).unwrap();
+        let plan = crate::search::SearchPlan {
+            terms: vec!["invoice".into()],
+            after: Some(4_000),
+            ..Default::default()
+        };
+        let hits = search_planned(&conn, &plan, ACCT, Some(&money)).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].thread_id, "t-in");
     }
 
     #[test]
