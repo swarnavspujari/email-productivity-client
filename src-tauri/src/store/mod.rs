@@ -1,10 +1,22 @@
 //! SQLite persistence: threads/messages/attachments, JSON settings blobs,
-//! and an FTS5 index for instant full-text search.
+//! an FTS5 index for instant full-text search, and a sqlite-vec table for
+//! semantic (vector) search.
+pub mod vec;
+
 use crate::types::*;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
 pub fn open(path: &std::path::Path) -> Result<Connection, String> {
+    // sqlite-vec's vec0 module rides every connection opened after this via
+    // SQLite's process-global auto-extension hook. Registered here (not in
+    // main) so tests that open stores directly get it too.
+    static VEC_INIT: std::sync::Once = std::sync::Once::new();
+    VEC_INIT.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    });
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
     conn.execute_batch(
         r#"
@@ -202,6 +214,26 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
             updated_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (account_id, source, email)
         );",
+    )
+    .map_err(|e| e.to_string())?;
+    // Search Phase 4: semantic vectors. mail_vec holds one normalized
+    // 384-dim embedding per message; vec_meta is its plain-table bookkeeping
+    // mirror (which message/thread/account a vector belongs to and which
+    // model produced it) — a vec0 table can't be LEFT-JOINed efficiently to
+    // answer "which messages still need embedding".
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS mail_vec USING vec0(
+             embedding float[384] distance_metric=cosine
+         );
+         CREATE TABLE IF NOT EXISTS vec_meta (
+             vec_rowid INTEGER PRIMARY KEY,
+             message_id TEXT NOT NULL UNIQUE,
+             thread_id TEXT NOT NULL,
+             account_id TEXT NOT NULL,
+             model TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_vec_meta_thread ON vec_meta(thread_id);
+         CREATE INDEX IF NOT EXISTS idx_vec_meta_account ON vec_meta(account_id);",
     )
     .map_err(|e| e.to_string())?;
     Ok(conn)
@@ -775,8 +807,10 @@ pub fn upsert_thread(
     }
 
     // Rebuild this thread's FTS rows when a body healed, so recovered text is
-    // searchable. `msgs` is the full thread on the sync/seed path.
+    // searchable. `msgs` is the full thread on the sync/seed path. Healed
+    // bodies must re-embed too — drop vectors; the embed beat re-adds them.
     if any_healed {
+        vec::delete_thread_vectors(conn, &t.id)?;
         conn.execute("DELETE FROM mail_fts WHERE thread_id = ?1", params![t.id])
             .map_err(|e| e.to_string())?;
         for (m, _, _, _, _) in msgs {
@@ -1117,6 +1151,7 @@ pub fn outbox_bump_attempts(conn: &Connection, id: i64) {
 /// Trash = remove the thread from the local cache entirely (Gmail keeps it
 /// recoverable server-side for 30 days).
 pub fn delete_thread(conn: &Connection, id: &str) -> Result<(), String> {
+    vec::delete_thread_vectors(conn, id)?;
     conn.execute("DELETE FROM mail_fts WHERE thread_id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     conn.execute(
@@ -2015,5 +2050,68 @@ mod tests {
         let hits = search(&conn, "from:maya deck", ACCT).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].thread_id, "t-maya");
+    }
+
+    // ------------------------------------------------------------ vectors
+
+    #[test]
+    fn vec0_loads_and_knn_returns_hand_inserted_vector() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        let v: String = conn.query_row("SELECT vec_version()", [], |r| r.get(0)).unwrap();
+        assert!(v.starts_with('v'));
+        let mut a = vec![0f32; 384];
+        a[0] = 1.0;
+        let mut b = vec![0f32; 384];
+        b[1] = 1.0;
+        vec::insert(&conn, "m-a", "t-a", ACCT, "test", &a).unwrap();
+        vec::insert(&conn, "m-b", "t-b", ACCT, "test", &b).unwrap();
+        // query near a: a must come back first at ~0 cosine distance
+        let mut q = vec![0f32; 384];
+        q[0] = 1.0;
+        let hits: Vec<(i64, f64)> = conn
+            .prepare("SELECT rowid, distance FROM mail_vec WHERE embedding MATCH ?1 AND k = 2")
+            .unwrap()
+            .query_map(rusqlite::params![vec::vec_to_blob(&q)], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].1 < 0.001 && hits[1].1 > 0.9, "distances: {hits:?}");
+    }
+
+    #[test]
+    fn deleting_a_thread_drops_its_vectors_and_missing_finds_unembedded() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        seed(&conn, "t-1", "Invoice", "amount due", "Ann", 1_000);
+        let missing = vec::missing(&conn, ACCT, 10).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].0, "t-1-m1");
+        assert!(missing[0].2.starts_with("Invoice\namount due"), "text: {:?}", missing[0].2);
+        let mut v = vec![0f32; 384];
+        v[3] = 1.0;
+        vec::insert(&conn, "t-1-m1", "t-1", ACCT, "test", &v).unwrap();
+        assert_eq!(vec::count_missing(&conn, ACCT).unwrap(), 0);
+        assert_eq!(vec::count_embedded(&conn, ACCT).unwrap(), 1);
+        delete_thread(&conn, "t-1").unwrap();
+        assert_eq!(vec::count_embedded(&conn, ACCT).unwrap(), 0);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM mail_vec", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn model_tag_change_wipes_all_but_demo_vectors() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        let v = {
+            let mut v = vec![0f32; 384];
+            v[0] = 1.0;
+            v
+        };
+        vec::insert(&conn, "m-real", "t-r", ACCT, "local:x", &v).unwrap();
+        vec::insert(&conn, "m-demo", "t-d", "demo@fission.local", "demo", &v).unwrap();
+        assert!(vec::ensure_model_tag(&conn, "local:y").unwrap());
+        assert_eq!(vec::count_embedded(&conn, ACCT).unwrap(), 0);
+        assert_eq!(vec::count_embedded(&conn, "demo@fission.local").unwrap(), 1);
+        // same tag again: no wipe
+        assert!(!vec::ensure_model_tag(&conn, "local:y").unwrap());
     }
 }
