@@ -104,6 +104,10 @@ export interface Backend {
   /** Full-history search: local matches plus a live Gmail search for mail
    *  older than the local cache. Slower than search(); call it debounced. */
   searchAll(query: string): Promise<SearchResult[]>;
+  /** Recent threads where an address was a sender or recipient (from/to/cc),
+   *  newest first — the contact panel's mail history. Address-scoped, not
+   *  full-text: only threads that person was actually a participant in. */
+  threadsWithContact(email: string): Promise<SearchResult[]>;
   /** Fetch the next older page of a paged view (done/starred/trash) from
    *  Gmail. Returns how many new threads were added. */
   loadOlder(view: MailView): Promise<number>;
@@ -330,6 +334,9 @@ class TauriBackend implements Backend {
   }
   searchAll(query: string) {
     return invoke<SearchResult[]>("search_all", { query });
+  }
+  threadsWithContact(email: string) {
+    return invoke<SearchResult[]>("threads_with_contact", { email });
   }
   loadOlder(view: MailView) {
     return invoke<number>("load_older", { view });

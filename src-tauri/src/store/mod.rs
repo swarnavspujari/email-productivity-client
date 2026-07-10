@@ -1924,6 +1924,45 @@ pub fn search_planned(
     Ok(lexical)
 }
 
+/// Recent threads where `email` was a sender or recipient (from/to/cc),
+/// newest first — the reading-pane contact panel's mail history. Matches the
+/// stored address columns only (never the body / FTS index), so it returns
+/// just the conversations a person was actually on, not every message that
+/// happens to mention their name. Excludes hidden (trash/spam) like `search`.
+pub fn threads_with_contact(
+    conn: &Connection,
+    email: &str,
+    account_id: &str,
+    limit: usize,
+) -> Result<Vec<SearchResult>, String> {
+    use rusqlite::types::Value;
+    let needle = email.trim().to_lowercase();
+    if !needle.contains('@') {
+        return Ok(vec![]);
+    }
+    // lower() both sides so a mixed-case stored header still matches; the
+    // needle is the full address, so this can't collapse into a name/body FTS.
+    let pat = like_pattern(&needle);
+    let sql = "SELECT t.id, t.subject, t.snippet, t.last_date
+               FROM threads t
+               WHERE t.account_id = ? AND t.hidden IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM messages m
+                   WHERE m.thread_id = t.id
+                     AND (lower(m.from_addr) LIKE ? ESCAPE '\\'
+                          OR lower(m.to_addrs)   LIKE ? ESCAPE '\\'
+                          OR lower(m.cc_addrs)   LIKE ? ESCAPE '\\'))
+               ORDER BY t.last_date DESC LIMIT ?";
+    let params_v = vec![
+        Value::Text(account_id.to_string()),
+        Value::Text(pat.clone()),
+        Value::Text(pat.clone()),
+        Value::Text(pat),
+        Value::Integer(limit as i64),
+    ];
+    run_search_sql(conn, sql, params_v)
+}
+
 /// One thread as a SearchResult (used to fold remote full-history matches in
 /// beside the local FTS results). Excludes hidden (trash/spam) like `search`.
 pub fn get_search_result(conn: &Connection, id: &str) -> Option<SearchResult> {
@@ -2162,6 +2201,56 @@ mod tests {
         let hits = search(&conn, "from:maya deck", ACCT).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].thread_id, "t-maya");
+    }
+
+    #[test]
+    fn threads_with_contact_matches_addresses_not_body() {
+        let conn = open(std::path::Path::new(":memory:")).unwrap();
+        // Maya is the SENDER here — must match.
+        seed(&conn, "t-from", "Deck feedback", "notes attached", "Maya", 3_000);
+        // Her address only appears in the BODY here — must NOT match (the bug).
+        seed(&conn, "t-body", "Logistics", "please cc maya@x.test next time", "Bob", 4_000);
+        // Maya is a RECIPIENT here — must match.
+        let t = Thread {
+            id: "t-to".into(),
+            subject: "Intro".into(),
+            snippet: String::new(),
+            participants: vec!["You".into()],
+            message_count: 1,
+            last_date: 2_000,
+            unread: false,
+            starred: false,
+            labels: vec![],
+            in_inbox: true,
+            snoozed_until: None,
+        };
+        let m = Message {
+            id: "t-to-m1".into(),
+            thread_id: "t-to".into(),
+            from: "you@x.test".into(),
+            from_name: "You".into(),
+            to: vec!["Maya <maya@x.test>".into()],
+            cc: vec![],
+            subject: "Intro".into(),
+            snippet: String::new(),
+            body_text: "hi".into(),
+            body_html: None,
+            date: 2_000,
+            unread: false,
+            attachments: vec![],
+        };
+        upsert_thread(&conn, ACCT, &t, &[(m, None, None, None, vec![])]).unwrap();
+
+        // recency desc; the body-only mention (t-body) is excluded.
+        let hits = threads_with_contact(&conn, "maya@x.test", ACCT, 10).unwrap();
+        assert_eq!(
+            hits.iter().map(|r| r.thread_id.as_str()).collect::<Vec<_>>(),
+            vec!["t-from", "t-to"]
+        );
+        // case-insensitive against the stored address.
+        assert_eq!(threads_with_contact(&conn, "MAYA@X.TEST", ACCT, 10).unwrap().len(), 2);
+        // a non-correspondent surfaces nothing, not full-text noise.
+        assert!(threads_with_contact(&conn, "ghost@x.test", ACCT, 10).unwrap().is_empty());
     }
 
     // ------------------------------------------------------------ vectors

@@ -701,6 +701,35 @@ mod tests {
     }
 
     #[test]
+    fn threads_with_contact_lists_only_real_participants() {
+        let conn = store::open(std::path::Path::new(":memory:")).unwrap();
+        seed_if_empty(&conn).unwrap();
+        // Priya is on two threads — the board-deck draft and an archived memo,
+        // newest first.
+        let priya =
+            store::threads_with_contact(&conn, "priya@fissionventures.com", store::DEMO_ACCOUNT, 20)
+                .unwrap();
+        assert_eq!(
+            priya.iter().map(|r| r.thread_id.as_str()).collect::<Vec<_>>(),
+            vec!["t-board-deck", "t-done-memo"]
+        );
+        // Maya sent the term-sheet thread. Her address ALSO appears in the body
+        // of the board-meeting invitation (t-cal-board) — the old first-name FTS
+        // matched that; the address-scoped query returns only t-term-sheet.
+        let maya =
+            store::threads_with_contact(&conn, "maya@heliosrobotics.io", store::DEMO_ACCOUNT, 20)
+                .unwrap();
+        assert_eq!(
+            maya.iter().map(|r| r.thread_id.as_str()).collect::<Vec<_>>(),
+            vec!["t-term-sheet"]
+        );
+        // A contact with no other mail surfaces nothing, not random matches.
+        assert!(store::threads_with_contact(&conn, "nobody@example.com", store::DEMO_ACCOUNT, 20)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn ensure_demo_vectors_is_idempotent_and_covers_all_messages() {
         let conn = store::open(std::path::Path::new(":memory:")).unwrap();
         seed_if_empty(&conn).unwrap();

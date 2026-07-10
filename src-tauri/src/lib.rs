@@ -2183,6 +2183,24 @@ fn search_threads(state: State<'_, AppState>, query: String) -> Result<Vec<Searc
     store::search(&conn, &query, &active)
 }
 
+/// Recent threads a contact (by email) was a sender or recipient on — the
+/// reading-pane contact panel's mail history. Address-scoped (from/to/cc), so
+/// it lists only conversations that person was actually a participant in, not
+/// every message that mentions their name. The UI drops the open thread and
+/// shows the top 5.
+#[tauri::command]
+fn threads_with_contact(
+    state: State<'_, AppState>,
+    email: String,
+) -> Result<Vec<SearchResult>, String> {
+    if email.len() > 254 {
+        return Err("email too long".into());
+    }
+    let conn = state.db.lock().unwrap();
+    let active = store::get_accounts(&conn).active;
+    store::threads_with_contact(&conn, &email, &active, 20)
+}
+
 /// Embed a search query, or None when semantic search isn't ready (model
 /// still downloading, no key, offline, or the embedder is mid-load — a
 /// search never waits on any of that).
@@ -3540,6 +3558,7 @@ pub fn run() {
             get_thread,
             refetch_message_body,
             search_threads,
+            threads_with_contact,
             list_labels,
             archive_thread,
             move_to_inbox,

@@ -45,6 +45,10 @@ import {
 
 const LS_KEY = "fission-mock-state-v1";
 
+// Upper bound on the contact panel's mail-history query (mirrors the Rust
+// command's limit). The panel drops the open thread and shows the top 5.
+const CONTACT_HISTORY_LIMIT = 20;
+
 /** Fixture "Google contacts" — people NOT in the demo mail corpus, so the
  *  browser demo shows address-book-sourced autocomplete (mirrors the desktop
  *  people_contacts table synced from the People API). */
@@ -688,6 +692,34 @@ export class MockBackend implements Backend {
   }
   async loadOlder(): Promise<number> {
     return 0;
+  }
+
+  /** Recent threads where `email` was a sender or recipient (from/to/cc) —
+   *  the contact panel's mail history. Address-scoped, never a full-text body
+   *  match, so it lists only conversations the person was actually on. Newest
+   *  first, capped; the caller drops the open thread. */
+  async threadsWithContact(email: string): Promise<SearchResult[]> {
+    const needle = email.trim().toLowerCase();
+    if (!needle.includes("@")) return [];
+    const hits: SearchResult[] = [];
+    for (const t of this.threads.filter((t) => this.inActiveAccount(t))) {
+      if (this.hiddenOf(t.id) !== null) continue;
+      const onThread = (this.messages.get(t.id) ?? []).some((m) =>
+        [m.from, ...m.to, ...m.cc].some((addr) =>
+          addr.toLowerCase().includes(needle)
+        )
+      );
+      if (!onThread) continue;
+      hits.push({
+        threadId: t.id,
+        subject: t.subject,
+        snippet: t.snippet,
+        lastDate: t.lastDate,
+      });
+    }
+    return hits
+      .sort((a, b) => b.lastDate - a.lastDate)
+      .slice(0, CONTACT_HISTORY_LIMIT);
   }
 
   async bulkArchive(opts: BulkArchiveOpts): Promise<number> {

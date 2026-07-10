@@ -30,10 +30,11 @@ export function ContactPanel({
   useEffect(() => {
     let stale = false;
     setHistory([]);
-    // FTS prefix search on the sender's name surfaces past conversations.
-    const q = name.split(" ")[0] || email.split("@")[0];
+    // Address-scoped history: threads this contact was actually a participant
+    // in (from/to/cc), not a full-text match on their name — so unrelated mail
+    // that merely mentions the word never leaks in. Drop the open thread.
     backend
-      .search(q)
+      .threadsWithContact(email)
       .then((r) => {
         if (!stale)
           setHistory(r.filter((x) => x.threadId !== currentThreadId).slice(0, 5));
@@ -42,7 +43,7 @@ export function ContactPanel({
     return () => {
       stale = true;
     };
-  }, [name, email, currentThreadId]);
+  }, [email, currentThreadId]);
 
   const domain = email.split("@")[1] ?? "";
   const website = domain && !FREEMAIL.has(domain.toLowerCase()) ? domain : null;
