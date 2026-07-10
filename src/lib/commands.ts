@@ -83,16 +83,20 @@ function myAddress(): string {
 
 export async function startReply(
   mode: "reply" | "replyAll" | "forward",
-  presetBody?: string
+  presetBody?: string,
+  targetMessageId?: string
 ) {
   const id = actionTargetThreadId();
   if (!id) return;
   const msgs = await messagesFor(id);
   if (msgs.length === 0) return;
   const me = myAddress().toLowerCase();
-  // reply to the most recent message that isn't ours
-  const last =
-    [...msgs].reverse().find((m) => m.from.toLowerCase() !== me) ??
+  // Default target: the most recent message that isn't ours. When the reader's
+  // per-message cursor supplies a specific message (Enter on a focused email),
+  // reply to THAT one instead — its sender, recipients, and quoted body.
+  const target =
+    (targetMessageId && msgs.find((m) => m.id === targetMessageId)) ||
+    [...msgs].reverse().find((m) => m.from.toLowerCase() !== me) ||
     msgs[msgs.length - 1];
 
   const subject = msgs[0].subject;
@@ -121,14 +125,14 @@ export async function startReply(
           ? subject
           : `Re: ${subject}`,
     body,
-    quote: replyTrailerHtml(last),
+    quote: replyTrailerHtml(target),
   };
   if (mode === "reply") {
-    base.to = last.from;
+    base.to = target.from;
   } else if (mode === "replyAll") {
     const others = new Set<string>();
-    others.add(last.from);
-    for (const a of [...last.to, ...last.cc]) {
+    others.add(target.from);
+    for (const a of [...target.to, ...target.cc]) {
       if (a.toLowerCase() !== me) others.add(a);
     }
     const [first, ...rest] = [...others];
@@ -458,6 +462,43 @@ export function allCommands(): Command[] {
       group: "Compose",
       when: () => hasTarget() && !inCompose(),
       run: () => startReply("forward"),
+    },
+    // Multi-message threads only: ↓/↑ move a per-message cursor (highlight +
+    // scroll into view) and Enter drills into the focused message (open it, or
+    // reply-all to it once open). ThreadView owns the cursor — these just emit
+    // the intent (like focusComposeField). Gated on >1 message and ordered
+    // before reader.lineDown/Up (down/up) and thread.replyAllOrOpen (enter), so
+    // in the reader they win, while single-message threads fall straight
+    // through to today's scroll / Reply-All.
+    {
+      id: "thread.focusNext",
+      title: "Next Message in Thread",
+      group: "Navigate",
+      hidden: true,
+      when: () => inThread() && mail().openMessages.length > 1,
+      run: () =>
+        window.dispatchEvent(
+          new CustomEvent("fission:thread-step", { detail: { dir: 1 } })
+        ),
+    },
+    {
+      id: "thread.focusPrev",
+      title: "Previous Message in Thread",
+      group: "Navigate",
+      hidden: true,
+      when: () => inThread() && mail().openMessages.length > 1,
+      run: () =>
+        window.dispatchEvent(
+          new CustomEvent("fission:thread-step", { detail: { dir: -1 } })
+        ),
+    },
+    {
+      id: "thread.focusEnter",
+      title: "Open / Reply to Focused Message",
+      group: "Navigate",
+      hidden: true,
+      when: () => inThread() && mail().openMessages.length > 1,
+      run: () => window.dispatchEvent(new CustomEvent("fission:thread-enter")),
     },
     {
       id: "thread.replyAllOrOpen",

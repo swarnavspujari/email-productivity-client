@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { backend, openExternal } from "@/lib/ipc";
+import { startReply } from "@/lib/commands";
 import { prepareEmailHtml } from "@/lib/email-render";
+import { nextFocusIndex } from "@/lib/thread-focus";
 import { useMail } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
@@ -197,13 +199,17 @@ function AttachmentChip({ a }: { a: Attachment }) {
 
 function MessageCard({
   m,
+  index,
   expanded,
+  focused,
   first,
   last,
   onToggle,
 }: {
   m: Message;
+  index: number;
   expanded: boolean;
+  focused: boolean;
   first: boolean;
   last: boolean;
   onToggle: () => void;
@@ -221,7 +227,11 @@ function MessageCard({
     return (
       <button
         onClick={onToggle}
-        className="flex w-full items-center gap-3 rounded-[10px] border border-line bg-surface px-4 py-2.5 text-left hover:bg-hover"
+        data-message-index={index}
+        data-focused={focused ? "true" : undefined}
+        className={`flex w-full items-center gap-3 rounded-[10px] border bg-surface px-4 py-2.5 text-left hover:bg-hover ${
+          focused ? "border-accent ring-1 ring-accent" : "border-line"
+        }`}
       >
         <Avatar name={m.fromName} email={m.from} size={26} />
         <span className="w-40 shrink-0 truncate text-[13px] font-medium text-ink-2">
@@ -237,8 +247,14 @@ function MessageCard({
 
   return (
     <div
+      data-message-index={index}
+      data-focused={focused ? "true" : undefined}
       className={`overflow-hidden rounded-[10px] border bg-raised ${
-        last ? "border-line-strong" : "border-line"
+        focused
+          ? "border-accent ring-1 ring-accent"
+          : last
+            ? "border-line-strong"
+            : "border-line"
       }`}
     >
       <button
@@ -355,12 +371,91 @@ export function ThreadView() {
   // Superhuman-style: older messages collapse; the last (and any unread)
   // stay open. User toggles override until the thread changes.
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  // Per-message keyboard cursor — only meaningful when messages.length > 1. The
+  // ref mirrors it so the window-event handlers below always read the live index
+  // without re-subscribing on every step.
+  const [focused, setFocused] = useState(0);
+  const focusedRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Expansion is independent of the cursor: last + unread open by default, an
+  // explicit click (override) wins. Arrowing never changes this; Enter writes an
+  // override to open a collapsed focused message.
+  const isExpanded = (m: Message, i: number) =>
+    overrides[m.id] ?? (i === messages.length - 1 || m.unread);
+
+  // Scroll message `i` just into view within the reader (12px margin), only when
+  // it's off-screen — same math as the open-scroll effect, instant for headless.
+  const scrollCardIntoView = (i: number) => {
+    const scroller = scrollRef.current;
+    const card = listRef.current?.children[i] as HTMLElement | undefined;
+    if (!scroller || !card) return;
+    const top =
+      card.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    const bottom = top + card.offsetHeight;
+    if (top < scroller.scrollTop + 12) {
+      scroller.scrollTop = Math.max(0, top - 12);
+    } else if (bottom > scroller.scrollTop + scroller.clientHeight - 12) {
+      scroller.scrollTop = bottom - scroller.clientHeight + 12;
+    }
+  };
 
   useEffect(() => {
     setOverrides({});
   }, [threadId]);
+
+  useEffect(() => {
+    focusedRef.current = focused;
+  }, [focused]);
+
+  // Park the cursor on the newest message whenever the thread's messages settle
+  // (matches where the pane opens). useLayoutEffect so it lands before paint —
+  // no one-frame highlight flash on message 0.
+  useLayoutEffect(() => {
+    const lastIdx = Math.max(0, messages.length - 1);
+    setFocused(lastIdx);
+    focusedRef.current = lastIdx;
+  }, [threadId, messages.length]);
+
+  // ↓/↑ step the cursor, Enter drills in. Intents come from commands.ts
+  // (thread.focusNext/Prev/Enter), which only fire for multi-message threads; we
+  // re-subscribe when messages/overrides change so the handlers read fresh state.
+  useEffect(() => {
+    if (messages.length <= 1) return;
+    const onStep = (e: Event) => {
+      const dir = (e as CustomEvent<{ dir: 1 | -1 }>).detail.dir;
+      const next = nextFocusIndex(focusedRef.current, dir, messages.length);
+      setFocused(next);
+      focusedRef.current = next;
+      requestAnimationFrame(() => scrollCardIntoView(next));
+    };
+    const onEnter = () => {
+      const i = focusedRef.current;
+      const m = messages[i];
+      if (!m) return;
+      if (!isExpanded(m, i)) {
+        // Stage 1 — open the focused message.
+        setOverrides((o) => ({ ...o, [m.id]: true }));
+        requestAnimationFrame(() => scrollCardIntoView(i));
+      } else {
+        // Stage 2 — it's open: reply-all to THIS message (its sender/recipients,
+        // its quoted body), reusing any previewed instant reply as the draft.
+        const u = useUi.getState();
+        const preset =
+          u.suggestionIndex === null ? undefined : u.suggestions[u.suggestionIndex];
+        void startReply("replyAll", preset, m.id);
+      }
+    };
+    window.addEventListener("fission:thread-step", onStep);
+    window.addEventListener("fission:thread-enter", onEnter);
+    return () => {
+      window.removeEventListener("fission:thread-step", onStep);
+      window.removeEventListener("fission:thread-enter", onEnter);
+    };
+  }, [messages, overrides]);
 
   useEffect(() => {
     // Bodies lay out at their real height before paint now (shadow DOM, no
@@ -407,8 +502,6 @@ export function ThreadView() {
 
   if (messages.length === 0 || !threadId) return null;
   const subject = messages[0].subject;
-  const isExpanded = (m: Message, i: number) =>
-    overrides[m.id] ?? (i === messages.length - 1 || m.unread);
   // The person you're talking to: latest sender that isn't you.
   const me = (myEmail ?? "").toLowerCase();
   const contact =
@@ -460,12 +553,16 @@ export function ThreadView() {
                 <MessageCard
                   key={m.id}
                   m={m}
+                  index={i}
                   expanded={isExpanded(m, i)}
+                  focused={messages.length > 1 && i === focused}
                   first={i === 0}
                   last={i === messages.length - 1}
-                  onToggle={() =>
-                    setOverrides((o) => ({ ...o, [m.id]: !isExpanded(m, i) }))
-                  }
+                  onToggle={() => {
+                    setFocused(i);
+                    focusedRef.current = i;
+                    setOverrides((o) => ({ ...o, [m.id]: !isExpanded(m, i) }));
+                  }}
                 />
               ))}
             </div>

@@ -52,6 +52,13 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "reader.lineDown": "down",
   "reader.lineUp": "up",
   "reader.pageUp": "shift+space",
+  // Multi-message threads: ↓/↑ step the per-message cursor and Enter drills into
+  // the focused message. These share keys with reader.lineDown/Up (down/up) and
+  // thread.replyAllOrOpen (enter); the commands' `when` (>1 message) + registry
+  // order decide the winner, so single-message threads keep scroll / Reply-All.
+  "thread.focusNext": "down",
+  "thread.focusPrev": "up",
+  "thread.focusEnter": "enter",
   "thread.unread": "u",
   // V = Move, L = Add/Remove Label in Superhuman; both open our picker.
   "thread.move": "v|l",

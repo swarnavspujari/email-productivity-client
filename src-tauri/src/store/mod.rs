@@ -311,6 +311,13 @@ pub fn default_settings() -> Settings {
         ("reader.lineDown", "down"),
         ("reader.lineUp", "up"),
         ("reader.pageUp", "shift+space"),
+        // Multi-message threads: ↓/↑ step the per-message cursor, Enter drills
+        // into the focused message. Share keys with reader.lineDown/Up and
+        // thread.replyAllOrOpen; the front-end `when` (>1 message) + command
+        // order pick the winner. Parity with defaults.ts.
+        ("thread.focusNext", "down"),
+        ("thread.focusPrev", "up"),
+        ("thread.focusEnter", "enter"),
         ("thread.unread", "u"),
         // V = Move, L = Add/Remove Label in Superhuman; both open our picker.
         ("thread.move", "v|l"),
