@@ -455,6 +455,7 @@ pub fn default_settings() -> Settings {
         notifications: true,
         onboarded: false,
         calendar_open: false,
+        hidden_calendars: Vec::new(),
         sidebar_open: false,
         show_shortcut_bar: true,
         undo_send_seconds: 10,

@@ -15,6 +15,7 @@ import { RestState } from "@/components/RestState";
 import { UndoToast } from "@/components/UndoToast";
 import { UndoSendBar } from "@/components/UndoSendBar";
 import { MailScreen } from "@/features/inbox/MailScreen";
+import { CalendarPanel } from "@/features/calendar/CalendarPanel";
 import { CalendarWeek } from "@/features/calendar/CalendarWeek";
 import { EventModal } from "@/features/calendar/EventModal";
 import { EventPopover } from "@/features/calendar/EventPopover";
@@ -405,6 +406,9 @@ export default function App() {
           </div>
         )}
       </main>
+      {/* The week view carries the calendar-management panel beside it
+          (design: week grid + mini-month + calendars list side by side). */}
+      {screen === "calendar" && <CalendarPanel />}
       {/* The event editor docks in the right-hand slot (like the shortcuts /
           calendar panels) so it stays put across the mail and calendar
           screens — opened from a slot click/drag or B, driven by

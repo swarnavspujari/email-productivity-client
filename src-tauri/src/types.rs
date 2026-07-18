@@ -97,6 +97,9 @@ pub struct Settings {
     /// Calendar side panel visible.
     #[serde(default)]
     pub calendar_open: bool,
+    /// Calendars unchecked in the side panel (ids) — events hide client-side.
+    #[serde(default)]
+    pub hidden_calendars: Vec<String>,
     /// Folder/label sidebar visible.
     #[serde(default)]
     pub sidebar_open: bool,

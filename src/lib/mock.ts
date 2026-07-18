@@ -62,6 +62,15 @@ const MOCK_GOOGLE_CONTACTS: { name: string; email: string }[] = [
   { name: "Ken Nakamura", email: "ken@sakurabridge.jp" },
 ];
 
+/** The demo account's calendarList — stands in for Google's (primary first,
+ *  varied access roles so role-gated affordances are all demoable). */
+const DEMO_CALENDARS: CalendarInfo[] = [
+  { id: "demo", name: "Personal", color: null, accessRole: "owner", primary: true },
+  { id: "demo-work", name: "Pujari VP — Work", color: null, accessRole: "owner", primary: false },
+  { id: "demo-family", name: "Family", color: null, accessRole: "writer", primary: false },
+  { id: "demo-birthdays", name: "Birthdays", color: null, accessRole: "reader", primary: false },
+];
+
 interface PersistedState {
   threadPatches: Record<
     string,
@@ -973,26 +982,46 @@ export class MockBackend implements Backend {
     this.persist();
   }
 
-  /** Mirror of src-tauri/src/mail/mock.rs demo_events — keep in sync. The
-   *  board meeting arrives as an invite (organizer ≠ self, RSVP pending) so
-   *  the popover's RSVP affordances are demoable. */
+  /** Superset of src-tauri/src/mail/mock.rs demo_events: the first five
+   *  blocks mirror the desktop demo (same ids — keep in sync; the board
+   *  meeting arrives as an invite so RSVP is demoable). The browser demo
+   *  extends them across several calendars — plus an overlap, a family
+   *  dinner, and weekday all-day events — so the per-calendar colors,
+   *  side-by-side packing, the all-day lane, and the show/hide checkboxes
+   *  are all exercisable, like a real Google calendarList. */
   private baseEvents(startMs: number, endMs: number): CalendarEvent[] {
     const H = 3600_000;
     const D = 24 * H;
     const me = this.state.activeAccount;
-    const blocks: Array<[number, number, string, string | null]> = [
-      [7, 8, "Workout", null],
-      [8.5, 9.75, "Deep work — LP letter", null],
-      [10, 11.5, "Helios Board Meeting", "Zoom"],
-      [12.5, 13.25, "Lunch", null],
-      [14, 14.75, "Fieldstone intro call", "Meet"],
+    const blocks: Array<{
+      from: number;
+      to: number;
+      title: string;
+      location: string | null;
+      calId: string;
+      /** Weekday gate (Date.getDay()); undefined = every day. */
+      dow?: number;
+      allDay?: boolean;
+    }> = [
+      { from: 7, to: 8, title: "Workout", location: null, calId: "demo" },
+      { from: 8.5, to: 9.75, title: "Deep work — LP letter", location: null, calId: "demo" },
+      { from: 10, to: 11.5, title: "Helios Board Meeting", location: "Zoom", calId: "demo-work" },
+      { from: 12.5, to: 13.25, title: "Lunch", location: null, calId: "demo" },
+      { from: 14, to: 14.75, title: "Fieldstone intro call", location: "Meet", calId: "demo-work" },
+      // browser-demo extensions (desktop demo stops above)
+      { from: 10.75, to: 11.75, title: "Portfolio pipeline sync", location: null, calId: "demo-work" },
+      { from: 18, to: 19.5, title: "Family dinner", location: null, calId: "demo-family" },
+      { from: 0, to: 24, title: "Denver offsite", location: "Denver", calId: "demo-work", dow: 3, allDay: true },
+      { from: 0, to: 24, title: "Maya's birthday", location: null, calId: "demo-birthdays", dow: 5, allDay: true },
     ];
     const events: CalendarEvent[] = [];
     let dayStart = new Date(startMs).setHours(0, 0, 0, 0);
     while (dayStart < endMs) {
-      blocks.forEach(([from, to, title, location], i) => {
-        const s = dayStart + from * H;
-        const e = dayStart + to * H;
+      const dow = new Date(dayStart).getDay();
+      blocks.forEach(({ from, to, title, location, calId, dow: onDow, allDay }, i) => {
+        if (onDow !== undefined && onDow !== dow) return;
+        const s = allDay ? dayStart : dayStart + from * H;
+        const e = allDay ? dayStart + D : dayStart + to * H;
         if (e <= startMs || s >= endMs) return;
         const invited = i === 2; // Helios Board Meeting
         const attendees: EventAttendee[] = invited
@@ -1034,15 +1063,17 @@ export class MockBackend implements Backend {
                 },
               ]
             : [];
+        const cal =
+          DEMO_CALENDARS.find((c) => c.id === calId) ?? DEMO_CALENDARS[0];
         events.push({
           id: `demo-${dayStart}-${i}`,
-          calendarId: "demo",
-          calendar: "Demo",
+          calendarId: cal.id,
+          calendar: cal.name,
           color: null,
           title,
           startMs: s,
           endMs: e,
-          allDay: false,
+          allDay: !!allDay,
           location,
           description: invited
             ? "Agenda: Q2 financials, Series A close, hiring plan."
@@ -1055,7 +1086,7 @@ export class MockBackend implements Backend {
           recurringEventId: null,
           hangoutLink: i === 4 ? "https://meet.google.com/demo-fieldstone" : null,
           attendees,
-          accessRole: "owner",
+          accessRole: cal.accessRole,
           icalUid: `demo-${dayStart}-${i}@fission.local`,
         });
       });
@@ -1155,9 +1186,7 @@ export class MockBackend implements Backend {
   }
 
   async listCalendars(): Promise<CalendarInfo[]> {
-    return [
-      { id: "demo", name: "Demo", color: null, accessRole: "owner", primary: true },
-    ];
+    return DEMO_CALENDARS.map((c) => ({ ...c }));
   }
 
   async createEvent(
@@ -1168,10 +1197,13 @@ export class MockBackend implements Backend {
     const n = ov.seq++;
     const id = `demo-created-${n}`;
     const me = this.state.activeAccount;
+    const cal =
+      DEMO_CALENDARS.find((c) => c.id === (draft.calendarId || "demo")) ??
+      DEMO_CALENDARS[0];
     const ev: CalendarEvent = {
       id,
-      calendarId: draft.calendarId || "demo",
-      calendar: "Demo",
+      calendarId: cal.id,
+      calendar: cal.name,
       color: null,
       title: draft.title,
       startMs: draft.startMs,
@@ -1189,7 +1221,7 @@ export class MockBackend implements Backend {
       // requested (the desktop app gets a real meet.google.com link back).
       hangoutLink: draft.addConferencing ? `https://meet.google.com/demo-${n}` : null,
       attendees: this.draftAttendees(draft, null),
-      accessRole: "owner",
+      accessRole: cal.accessRole,
       icalUid: `${id}@fission.local`,
     };
     ov.created.push(ev);

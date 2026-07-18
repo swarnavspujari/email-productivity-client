@@ -50,6 +50,8 @@ interface CalendarState {
 
   shiftDay: (delta: number) => void;
   goToday: () => void;
+  /** Jump the focused day to a local-midnight ms (mini-month click). */
+  goToDay: (dayStartMs: number) => void;
   /** Local read of [dayStart, dayStart + days), bucketed per day. */
   loadRange: (dayStart: number, days: number) => Promise<void>;
   /** Ask the backend for fresh data around the active range. */
@@ -78,6 +80,8 @@ export const useCalendar = create<CalendarState>((set, get) => ({
 
   shiftDay: (delta) => set((s) => ({ dayOffset: s.dayOffset + delta })),
   goToday: () => set({ dayOffset: 0 }),
+  goToDay: (dayStartMs) =>
+    set({ dayOffset: Math.round((dayStartMs - startOfToday()) / DAY_MS) }),
 
   loadRange: async (dayStart, days) => {
     set({ activeStart: dayStart, activeDays: days });

@@ -107,6 +107,9 @@ export interface Settings {
   onboarded: boolean;
   /** Calendar side panel visible. */
   calendarOpen: boolean;
+  /** Calendars unchecked in the side panel — their events hide in both
+   *  calendar views. Ids, not names; filtering is client-side. */
+  hiddenCalendars: string[];
   /** Folder/label sidebar visible. */
   sidebarOpen: boolean;
   /** Bottom shortcut-hint footer visible (default true). */

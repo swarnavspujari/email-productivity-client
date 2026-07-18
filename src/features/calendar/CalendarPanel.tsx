@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { HoverHint } from "@/components/HoverHint";
+import {
+  assignCalendarHues,
+  calendarHue,
+  hueVar,
+} from "@/lib/calendar-view";
 import { DAY_MS, startOfToday, useCalendar } from "@/stores/calendar";
+import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -28,7 +35,15 @@ export function rsvpClasses(e: CalendarEvent): string {
   return "";
 }
 
-function EventBlock({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
+function EventBlock({
+  e,
+  dayStart,
+  hue,
+}: {
+  e: CalendarEvent;
+  dayStart: number;
+  hue: string;
+}) {
   const gridStart = dayStart + FIRST_HOUR * 3600_000;
   const gridEnd = dayStart + LAST_HOUR * 3600_000;
   const s = Math.max(e.startMs, gridStart);
@@ -39,13 +54,11 @@ function EventBlock({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
   const past = e.endMs < Date.now();
   return (
     <button
-      className={`absolute left-1 right-1 overflow-hidden rounded-md border border-accent/30 bg-accent-dim px-2 py-1 text-left ${
+      className={`cal-block absolute left-1 right-1 overflow-hidden rounded-md py-1 pl-[11px] pr-2 text-left ${
         past ? "opacity-55" : ""
-      } ${rsvpClasses(e)} hover:border-accent/60`}
-      style={{ top, height }}
-      title={`${e.title} · ${timeRange(e)}${e.location ? ` · ${e.location}` : ""}${
-        e.calendar !== "Demo" ? ` · ${e.calendar}` : ""
-      }`}
+      } ${rsvpClasses(e)}`}
+      style={{ top, height, "--ev": hue } as React.CSSProperties}
+      title={`${e.title} · ${timeRange(e)}${e.location ? ` · ${e.location}` : ""} · ${e.calendar}`}
       onMouseDown={(ev) => {
         // keep slot-drag from starting, but still hand the panel keyboard
         // focus like any other click inside the aside
@@ -67,27 +80,212 @@ function EventBlock({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
   );
 }
 
+const MINI_DOW = ["S", "M", "T", "W", "T", "F", "S"];
+
+/** Navigable mini-month: today filled with the accent, the focused day (and
+ *  the focused week, while the week view is open) banded; click any day to
+ *  jump the agenda — and the week view's range with it. */
+function MiniMonth({ dayStart }: { dayStart: number }) {
+  const [monthOffset, setMonthOffset] = useState(0);
+  const weekViewOpen = useUi((s) => s.screen === "calendar");
+  const focused = new Date(dayStart);
+  // follow the agenda when it moves to another month
+  useEffect(() => setMonthOffset(0), [dayStart]);
+
+  const view = new Date(focused.getFullYear(), focused.getMonth() + monthOffset, 1);
+  const gridStart = new Date(
+    view.getFullYear(),
+    view.getMonth(),
+    1 - view.getDay()
+  );
+  const cells = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(
+      gridStart.getFullYear(),
+      gridStart.getMonth(),
+      gridStart.getDate() + i
+    );
+    return { ms: d.getTime(), date: d.getDate(), inMonth: d.getMonth() === view.getMonth() };
+  });
+  const today = startOfToday();
+  const weekStart = dayStart - new Date(dayStart).getDay() * DAY_MS;
+  const weekEnd = weekStart + 6 * DAY_MS;
+  const label = view.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const navBtn =
+    "flex h-[22px] w-[22px] items-center justify-center rounded-md text-[14px] text-ink-3 hover:bg-hover hover:text-ink";
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center">
+        <span className="flex-1 text-[13.5px] font-semibold text-ink">{label}</span>
+        <HoverHint label="Previous month" placement="bottom">
+          <button
+            className={navBtn}
+            aria-label="Previous month"
+            onClick={() => setMonthOffset((o) => o - 1)}
+          >
+            ‹
+          </button>
+        </HoverHint>
+        <HoverHint label="Next month" placement="bottom">
+          <button
+            className={navBtn}
+            aria-label="Next month"
+            onClick={() => setMonthOffset((o) => o + 1)}
+          >
+            ›
+          </button>
+        </HoverHint>
+      </div>
+      <div className="grid grid-cols-7 gap-y-px">
+        {MINI_DOW.map((d, i) => (
+          <div
+            key={i}
+            className="pb-0.5 text-center text-[10.5px] font-medium text-ink-3"
+          >
+            {d}
+          </div>
+        ))}
+        {cells.map((c) => {
+          const isToday = c.ms === today;
+          const isFocused = c.ms === dayStart;
+          const inWeek = weekViewOpen && c.ms >= weekStart && c.ms <= weekEnd;
+          return (
+            <button
+              key={c.ms}
+              onClick={() => useCalendar.getState().goToDay(c.ms)}
+              className={`flex h-[26px] items-center justify-center rounded-full text-[12px] tabular-nums ${
+                isToday
+                  ? "bg-accent font-bold text-on-accent"
+                  : isFocused
+                    ? "bg-selected font-semibold text-ink"
+                    : inWeek
+                      ? "bg-hover font-semibold text-ink-2"
+                      : c.inMonth
+                        ? "text-ink-2 hover:bg-hover"
+                        : "text-ink-3 opacity-45 hover:bg-hover"
+              }`}
+            >
+              {c.date}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Filled-with-its-hue calendar checkbox (design system calendar panel). */
+function CalCheck({ hue, on }: { hue: string; on: boolean }) {
+  return (
+    <span
+      className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[11px] leading-none text-on-accent"
+      style={
+        on
+          ? { background: hue }
+          : { border: `1.5px solid color-mix(in oklab, ${hue} 55%, transparent)` }
+      }
+    >
+      {on ? "✓" : ""}
+    </span>
+  );
+}
+
+/** The account's calendars, grouped under its email: each row a color-coded
+ *  checkbox that shows/hides that calendar's events live in both views. The
+ *  choice persists in settings. */
+function CalendarsList() {
+  const calendars = useCalendar((s) => s.calendars);
+  const hiddenCalendars = useSettings((s) => s.settings.hiddenCalendars);
+  const account = useSettings((s) => s.accounts.active);
+  const [expanded, setExpanded] = useState(true);
+  const hues = useMemo(() => assignCalendarHues(calendars), [calendars]);
+  if (calendars.length === 0) return null;
+  const hidden = new Set(hiddenCalendars);
+
+  const toggle = (id: string) => {
+    const s = useSettings.getState();
+    const cur = s.settings.hiddenCalendars;
+    void s.save({
+      hiddenCalendars: cur.includes(id)
+        ? cur.filter((h) => h !== id)
+        : [...cur, id],
+    });
+  };
+
+  return (
+    <div>
+      <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-ink-3">
+        Calendars
+      </div>
+      <button
+        className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-hover"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink-2">
+          {account}
+        </span>
+        <span
+          className="text-[10px] text-ink-3 transition-transform"
+          style={{ transform: expanded ? "none" : "rotate(-90deg)" }}
+        >
+          ▼
+        </span>
+      </button>
+      {expanded &&
+        calendars.map((c) => {
+          const on = !hidden.has(c.id);
+          return (
+            <button
+              key={c.id}
+              className="flex w-full items-center gap-2.5 rounded-md px-1 py-[5px] text-left hover:bg-hover"
+              onClick={() => toggle(c.id)}
+              title={on ? `Hide ${c.name}` : `Show ${c.name}`}
+            >
+              <CalCheck hue={hueVar(calendarHue(hues, c.id))} on={on} />
+              <span
+                className={`min-w-0 flex-1 truncate text-[12.5px] ${
+                  on ? "text-ink" : "text-ink-3"
+                }`}
+              >
+                {c.name}
+              </span>
+            </button>
+          );
+        })}
+    </div>
+  );
+}
+
 /** Right-hand day calendar, Superhuman-style: toggleable, painted instantly
- *  from the shared day-keyed cache; a background sync keeps it fresh. ←/→
- *  move days while the panel has focus. Click an event for details/RSVP;
- *  click or drag an empty slot to create one. */
+ *  from the shared day-keyed cache; a background sync keeps it fresh. A
+ *  navigable mini-month and the color-coded calendars list sit above the
+ *  agenda. ←/→ move days while the panel has focus. Click an event for
+ *  details/RSVP; click or drag an empty slot to create one. */
 export function CalendarPanel() {
   const dayOffset = useCalendar((s) => s.dayOffset);
   const events = useCalendar((s) => s.eventsByDay);
   const loadedDays = useCalendar((s) => s.loadedDays);
+  const calendars = useCalendar((s) => s.calendars);
   const error = useCalendar((s) => s.error);
+  const hiddenCalendars = useSettings((s) => s.settings.hiddenCalendars);
   const focused = useUi((s) => s.focusRegion === "calendar");
   const [nowTick, setNowTick] = useState(Date.now());
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dayStart = useMemo(() => startOfToday() + dayOffset * DAY_MS, [dayOffset]);
+  const hues = useMemo(() => assignCalendarHues(calendars), [calendars]);
+  const hidden = useMemo(() => new Set(hiddenCalendars), [hiddenCalendars]);
 
   useEffect(() => {
     const cal = useCalendar.getState();
     void cal.loadRange(dayStart, 1);
     cal.requestRefresh();
   }, [dayStart]);
+
+  useEffect(() => {
+    void useCalendar.getState().loadCalendars();
+  }, []);
 
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
@@ -138,10 +336,12 @@ export function CalendarPanel() {
     window.addEventListener("mouseup", up);
   };
 
-  const dayEvents = events[dayStart];
+  const dayEvents = (events[dayStart] ?? []).filter(
+    (e) => !hidden.has(e.calendarId)
+  );
   const loading = !loadedDays[dayStart];
-  const timed = (dayEvents ?? []).filter((e) => !e.allDay);
-  const allDay = (dayEvents ?? []).filter((e) => e.allDay);
+  const timed = dayEvents.filter((e) => !e.allDay);
+  const allDay = dayEvents.filter((e) => e.allDay);
   const isToday = dayOffset === 0;
   const nowTop =
     isToday && nowTick > dayStart + FIRST_HOUR * 3600_000 && nowTick < dayStart + LAST_HOUR * 3600_000
@@ -161,6 +361,9 @@ export function CalendarPanel() {
   const dragHeight = drag
     ? (Math.abs(drag.to - drag.from) / 3600_000) * PX_PER_HOUR
     : 0;
+
+  const navBtn =
+    "rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink";
 
   return (
     <aside
@@ -187,39 +390,55 @@ export function CalendarPanel() {
             <span className="kbd">→</span>
           </span>
         )}
-        <button
-          className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
-          onClick={() => {
-            const start = dayStart + 9 * 3600_000;
-            useCalendar.getState().openCreate(start, start + 3600_000);
-          }}
-          title="New event (B)"
-        >
-          +
-        </button>
-        <button
-          className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
-          onClick={() => useCalendar.getState().shiftDay(-1)}
-          title="Previous day (←)"
-        >
-          ‹
-        </button>
-        <button
-          className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
-          onClick={() => useCalendar.getState().shiftDay(1)}
-          title="Next day (→)"
-        >
-          ›
-        </button>
+        <HoverHint label="New event" command="calendar.newEvent" placement="bottom">
+          <button
+            className={navBtn}
+            aria-label="New event"
+            onClick={() => {
+              const start = dayStart + 9 * 3600_000;
+              useCalendar.getState().openCreate(start, start + 3600_000);
+            }}
+          >
+            +
+          </button>
+        </HoverHint>
+        <HoverHint label="Previous day" command="calendar.prevDay" placement="bottom">
+          <button
+            className={navBtn}
+            aria-label="Previous day"
+            onClick={() => useCalendar.getState().shiftDay(-1)}
+          >
+            ‹
+          </button>
+        </HoverHint>
+        <HoverHint label="Next day" command="calendar.nextDay" placement="bottom">
+          <button
+            className={navBtn}
+            aria-label="Next day"
+            onClick={() => useCalendar.getState().shiftDay(1)}
+          >
+            ›
+          </button>
+        </HoverHint>
+      </div>
+
+      <div className="shrink-0 space-y-2 border-b border-line px-3 pb-2">
+        <MiniMonth dayStart={dayStart} />
+        <CalendarsList />
       </div>
 
       {allDay.length > 0 && (
-        <div className="space-y-1 px-4 pb-2">
+        <div className="space-y-1 px-4 pb-2 pt-2">
           {allDay.map((e) => (
             <button
               key={e.id}
-              className={`block w-full truncate rounded-md border border-accent/30 bg-accent-dim px-2 py-1 text-left text-[12px] font-medium text-ink hover:border-accent/60 ${rsvpClasses(e)}`}
-              title={e.title}
+              className={`cal-block block w-full truncate rounded-md py-1 pl-[11px] pr-2 text-left text-[12px] font-medium text-ink ${rsvpClasses(e)}`}
+              style={
+                {
+                  "--ev": hueVar(calendarHue(hues, e.calendarId)),
+                } as React.CSSProperties
+              }
+              title={`${e.title} · ${e.calendar}`}
               onClick={(ev) =>
                 useCalendar.getState().openPopover(e, ev.clientX, ev.clientY)
               }
@@ -262,7 +481,12 @@ export function CalendarPanel() {
               title="Click or drag to create an event"
             >
               {timed.map((e) => (
-                <EventBlock key={e.id} e={e} dayStart={dayStart} />
+                <EventBlock
+                  key={e.id}
+                  e={e}
+                  dayStart={dayStart}
+                  hue={hueVar(calendarHue(hues, e.calendarId))}
+                />
               ))}
               {drag && (
                 <div

@@ -166,6 +166,7 @@ export function defaultSettings(): Settings {
     notifications: true,
     onboarded: false,
     calendarOpen: false,
+    hiddenCalendars: [],
     sidebarOpen: false,
     showShortcutBar: true,
     undoSendSeconds: 10,

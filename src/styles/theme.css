@@ -314,6 +314,28 @@ body {
   user-select: text;
 }
 
+/* Calendar event chip (design system calendar/EventBlock): the calendar's
+   hue — set `--ev` on the element — mixed into the surface (never a big
+   saturated fill), a saturated left bar, and a hairline same-hue border that
+   strengthens on hover. RSVP/past states (dashed pending, faded/struck
+   declined, faded past) come from rsvpClasses' utilities, so this lives in
+   @layer components where utilities can override it. */
+@layer components {
+  .cal-block {
+    --ev: var(--cal-cerulean);
+    border: 1px solid color-mix(in oklab, var(--ev) 34%, transparent);
+    background: color-mix(in oklab, var(--ev) 24%, var(--bg-surface));
+    box-shadow: inset 3px 0 0 var(--ev);
+    /* no transition here: animating a color-mix that tracks --ev can freeze
+       at the pre-change color in throttled renderers (hue lands async once
+       the calendarList loads) — instant hover matches the app anyway */
+  }
+  .cal-block:hover {
+    border-color: color-mix(in oklab, var(--ev) 52%, transparent);
+    background: color-mix(in oklab, var(--ev) 30%, var(--bg-surface));
+  }
+}
+
 /* Keycap hint chips used in palette + shortcut help */
 .kbd {
   display: inline-block;

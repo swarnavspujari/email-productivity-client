@@ -2,8 +2,9 @@
 // Meet link, description, guest list with RSVP states. Actions gate on the
 // calendar's accessRole + organizer: owners edit/delete (with a notify-guests
 // step when there are guests), invited attendees RSVP Yes/Maybe/No.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { backend, openExternal } from "@/lib/ipc";
+import { assignCalendarHues, calendarHue, hueVar } from "@/lib/calendar-view";
 import { useCalendar } from "@/stores/calendar";
 import { useUi } from "@/stores/ui";
 import type { CalendarEvent, RsvpResponse } from "@/lib/types";
@@ -38,24 +39,25 @@ function statusGlyph(s: string): string {
 
 export function EventPopover() {
   const popover = useCalendar((s) => s.popover);
+  const calendars = useCalendar((s) => s.calendars);
+  const hues = useMemo(() => assignCalendarHues(calendars), [calendars]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-  // clamp to the viewport once rendered (anchor is the click point)
-  useEffect(() => {
+  // Measure and clamp to the viewport before paint (anchor is the click
+  // point). One layout effect does measure + per-event reset together — as
+  // two effects in the same commit, the reset's setPos(null) landed AFTER
+  // the clamp's setPos(...) and the card stayed visibility:hidden forever.
+  useLayoutEffect(() => {
+    setConfirmDelete(false);
     if (!popover || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
     const left = Math.min(Math.max(8, popover.x + 8), window.innerWidth - r.width - 8);
     const top = Math.min(Math.max(8, popover.y - 20), window.innerHeight - r.height - 8);
     setPos({ left, top });
   }, [popover]);
-
-  useEffect(() => {
-    setConfirmDelete(false);
-    setPos(null);
-  }, [popover?.event.id]);
 
   useEffect(() => {
     if (!popover) return;
@@ -136,6 +138,10 @@ export function EventPopover() {
         style={pos ?? { left: popover.x + 8, top: popover.y - 20, visibility: pos ? undefined : "hidden" }}
       >
         <div className="flex items-start gap-2">
+          <span
+            className="mt-[5px] h-2.5 w-2.5 shrink-0 rounded-[3px]"
+            style={{ background: hueVar(calendarHue(hues, e.calendarId)) }}
+          />
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold leading-5 text-ink">{e.title}</div>
             <div className="mt-0.5 text-[12px] text-ink-3">{fmtRange(e)}</div>
@@ -159,7 +165,7 @@ export function EventPopover() {
               Join Google Meet
             </button>
           )}
-          {e.calendar && e.calendar !== "Demo" && (
+          {e.calendar && (
             <div className="text-ink-3">
               {e.calendar}
               {e.accessRole === "reader" || e.accessRole === "freeBusyReader"

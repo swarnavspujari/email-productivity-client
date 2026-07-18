@@ -1,44 +1,86 @@
-// Full-screen week view (design system calendar week): 7-day grid over the
-// shared day-keyed event cache, today column tinted, now-line, ‹ › weeks and
-// ←/→ day-stepping via calendar.prevDay/nextDay. Click an event for
-// details/RSVP; click or drag an empty slot to create one.
+// Full-screen week view (design system calendar week): a 24-hour, 7-day grid
+// — every hour rendered, the pane scrolls internally and opens at ~7am — with
+// an all-day lane, today-column tint + live now-line, and ‹ › week nav.
+// Events draw in their calendar's --cal-* hue, pack side by side when they
+// overlap, and respect the side panel's show/hide checkboxes. Click an event
+// for details/RSVP; click or drag an empty slot to create one.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HoverHint } from "@/components/HoverHint";
+import {
+  assignCalendarHues,
+  calendarHue,
+  hueVar,
+  packDay,
+  type PackSlot,
+} from "@/lib/calendar-view";
 import { DAY_MS, startOfToday, useCalendar } from "@/stores/calendar";
+import { useSettings } from "@/stores/settings";
 import { rsvpClasses } from "./CalendarPanel";
 import type { CalendarEvent } from "@/lib/types";
 
-const FIRST_HOUR = 7;
-const LAST_HOUR = 20;
-const PX_PER_HOUR = 46;
+const PX_PER_HOUR = 48;
+const GRID_HEIGHT = 24 * PX_PER_HOUR;
+const OPEN_AT_HOUR = 7; // scroll position on open — the workday's top
 
 function hourLabel(h: number): string {
+  if (h === 0) return "12 am";
   if (h === 12) return "12 pm";
   return h < 12 ? `${h} am` : `${h - 12} pm`;
 }
 
-function WeekEvent({ e, dayStart }: { e: CalendarEvent; dayStart: number }) {
-  const gridStart = dayStart + FIRST_HOUR * 3600_000;
-  const gridEnd = dayStart + LAST_HOUR * 3600_000;
-  const s = Math.max(e.startMs, gridStart);
+function timeRange(e: CalendarEvent): string {
+  const fmt = (ms: number) =>
+    new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${fmt(e.startMs)} – ${fmt(e.endMs)}`;
+}
+
+function WeekEvent({
+  e,
+  dayStart,
+  slot,
+  hue,
+}: {
+  e: CalendarEvent;
+  dayStart: number;
+  slot: PackSlot;
+  hue: string;
+}) {
+  const gridEnd = dayStart + DAY_MS;
+  const s = Math.max(e.startMs, dayStart);
   const end = Math.min(Math.max(e.endMs, s + 15 * 60_000), gridEnd);
-  if (end <= gridStart || s >= gridEnd) return null;
-  const top = ((s - gridStart) / 3600_000) * PX_PER_HOUR;
-  const height = Math.max(18, ((end - s) / 3600_000) * PX_PER_HOUR - 2);
+  if (end <= dayStart || s >= gridEnd) return null;
+  const top = ((s - dayStart) / 3600_000) * PX_PER_HOUR;
+  const height = Math.max(16, ((end - s) / 3600_000) * PX_PER_HOUR - 2);
+  const past = e.endMs < Date.now();
   return (
     <button
-      className={`absolute left-0.5 right-0.5 overflow-hidden rounded-[5px] border border-accent/30 bg-accent-dim px-1.5 py-0.5 text-left hover:border-accent/60 ${rsvpClasses(e)}`}
-      style={{ top, height }}
-      title={e.title}
+      className={`cal-block absolute overflow-hidden rounded-[5px] py-0.5 pl-[9px] pr-1.5 text-left ${
+        past ? "opacity-55" : ""
+      } ${rsvpClasses(e)}`}
+      style={
+        {
+          top,
+          height,
+          left: `calc(${(slot.col / slot.cols) * 100}% + 1px)`,
+          width: `calc(${100 / slot.cols}% - 2px)`,
+          "--ev": hue,
+        } as React.CSSProperties
+      }
+      title={`${e.title} · ${timeRange(e)}${e.location ? ` · ${e.location}` : ""} · ${e.calendar}`}
       onMouseDown={(ev) => ev.stopPropagation()}
       onClick={(ev) => {
         ev.stopPropagation();
         useCalendar.getState().openPopover(e, ev.clientX, ev.clientY);
       }}
     >
-      <div className="truncate text-[11px] font-medium leading-[14px] text-ink">
+      <div className="truncate text-[11.5px] font-medium leading-[15px] text-ink">
         {e.title}
       </div>
+      {height >= 30 && (
+        <div className="truncate text-[10.5px] leading-[14px] text-ink-3">
+          {timeRange(e)}
+        </div>
+      )}
     </button>
   );
 }
@@ -47,7 +89,9 @@ export function CalendarWeek() {
   const dayOffset = useCalendar((s) => s.dayOffset);
   const eventsByDay = useCalendar((s) => s.eventsByDay);
   const loadedDays = useCalendar((s) => s.loadedDays);
+  const calendars = useCalendar((s) => s.calendars);
   const error = useCalendar((s) => s.error);
+  const hiddenCalendars = useSettings((s) => s.settings.hiddenCalendars);
   const [nowTick, setNowTick] = useState(Date.now());
   const [drag, setDrag] = useState<{ day: number; from: number; to: number } | null>(
     null
@@ -69,6 +113,8 @@ export function CalendarWeek() {
     [weekStart]
   );
   const today = startOfToday();
+  const hues = useMemo(() => assignCalendarHues(calendars), [calendars]);
+  const hidden = useMemo(() => new Set(hiddenCalendars), [hiddenCalendars]);
 
   useEffect(() => {
     const cal = useCalendar.getState();
@@ -77,20 +123,18 @@ export function CalendarWeek() {
   }, [weekStart]);
 
   useEffect(() => {
+    void useCalendar.getState().loadCalendars();
+  }, []);
+
+  useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
     return () => clearInterval(t);
   }, []);
 
-  // On open, center the current time in the grid (Google-style). No-op when the
-  // whole 7am–8pm grid already fits without scrolling.
+  // All 24 hours exist in the grid; open with the workday at the top.
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
-    const now = new Date();
-    const nowH = now.getHours() + now.getMinutes() / 60;
-    const clamped = Math.min(LAST_HOUR, Math.max(FIRST_HOUR, nowH));
-    const target = (clamped - FIRST_HOUR) * PX_PER_HOUR;
-    el.scrollTop = Math.max(0, target - el.clientHeight / 2);
+    if (el) el.scrollTop = OPEN_AT_HOUR * PX_PER_HOUR - 8;
   }, []);
 
   /** Snap a pointer y (within a day column) to a 30-minute slot. */
@@ -98,9 +142,9 @@ export function CalendarWeek() {
     const col = colRefs.current[day];
     if (!col) return day + 9 * 3600_000;
     const rect = col.getBoundingClientRect();
-    const hours = (clientY - rect.top) / PX_PER_HOUR + FIRST_HOUR;
+    const hours = (clientY - rect.top) / PX_PER_HOUR;
     const snapped = Math.round(hours * 2) / 2;
-    return day + Math.min(LAST_HOUR, Math.max(FIRST_HOUR, snapped)) * 3600_000;
+    return day + Math.min(24, Math.max(0, snapped)) * 3600_000;
   };
 
   const beginSlotDrag = (day: number) => (ev: React.MouseEvent) => {
@@ -127,13 +171,26 @@ export function CalendarWeek() {
     window.addEventListener("mouseup", up);
   };
 
-  const monthTitle = new Date(focusedDay).toLocaleDateString(undefined, {
-    month: "long",
-    year: "numeric",
-  });
+  const visible = (d: number): CalendarEvent[] =>
+    (eventsByDay[d] ?? []).filter((e) => !hidden.has(e.calendarId));
+
+  const weekEnd = weekStart + 6 * DAY_MS;
+  const monthTitle =
+    new Date(weekStart).getMonth() === new Date(weekEnd).getMonth()
+      ? new Date(weekStart).toLocaleDateString(undefined, {
+          month: "long",
+          year: "numeric",
+        })
+      : `${new Date(weekStart).toLocaleDateString(undefined, { month: "short" })} – ${new Date(
+          weekEnd
+        ).toLocaleDateString(undefined, { month: "short", year: "numeric" })}`;
   const loading = days.some((d) => !loadedDays[d]);
-  const nowTop =
-    ((nowTick - today - FIRST_HOUR * 3600_000) / 3600_000) * PX_PER_HOUR;
+  const nowTop = ((nowTick - today) / 3600_000) * PX_PER_HOUR;
+  const hasAllDay = days.some((d) => visible(d).some((e) => e.allDay));
+  const tz =
+    new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName")?.value ?? "";
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -195,89 +252,169 @@ export function CalendarWeek() {
         </div>
       ) : (
         <>
-          <div className="flex pl-14 pr-4">
+          {/* day header row */}
+          <div className="flex items-end border-b border-line pr-4">
+            <div className="flex w-14 shrink-0 justify-end pb-2 pr-2">
+              <span className="text-[10px] font-medium tracking-[0.04em] text-ink-3">
+                {tz}
+              </span>
+            </div>
             {days.map((d) => {
               const date = new Date(d);
               const isToday = d === today;
               const isFocused = d === focusedDay;
               return (
-                <div
-                  key={d}
-                  className={`flex-1 rounded-t-md py-1.5 text-center text-[12.5px] ${
-                    isFocused ? "bg-selected" : ""
-                  } ${isToday ? "font-semibold text-ink" : "text-ink-3"}`}
-                >
-                  {date.toLocaleDateString(undefined, { weekday: "short" })}{" "}
-                  {date.getDate()}
+                <div key={d} className="min-w-0 flex-1 py-1.5 text-center">
+                  <span
+                    className={`inline-flex items-baseline gap-1.5 rounded-full ${
+                      isToday
+                        ? "bg-accent-dim px-2.5 py-0.5"
+                        : isFocused
+                          ? "bg-selected px-2.5 py-0.5"
+                          : ""
+                    }`}
+                  >
+                    <span
+                      className={`text-[12.5px] ${
+                        isToday
+                          ? "font-semibold text-accent-strong"
+                          : "text-ink-3"
+                      }`}
+                    >
+                      {date.toLocaleDateString(undefined, { weekday: "short" })}
+                    </span>
+                    <span
+                      className={`text-[13px] ${
+                        isToday
+                          ? "font-bold text-accent-strong"
+                          : "font-medium text-ink-2"
+                      }`}
+                    >
+                      {date.getDate()}
+                    </span>
+                  </span>
                 </div>
               );
             })}
           </div>
+
+          {/* all-day lane */}
+          {hasAllDay && (
+            <div className="flex items-stretch border-b border-line bg-surface pr-4">
+              <div className="flex w-14 shrink-0 items-center justify-end pr-2 text-[10px] text-ink-3">
+                all-day
+              </div>
+              {days.map((d, i) => (
+                <div
+                  key={d}
+                  className={`flex min-w-0 flex-1 flex-col gap-[3px] px-[3px] py-1 ${
+                    i ? "border-l border-line" : ""
+                  }`}
+                >
+                  {visible(d)
+                    .filter((e) => e.allDay)
+                    .map((e) => (
+                      <button
+                        key={e.id}
+                        className={`cal-block w-full truncate rounded-[5px] py-0.5 pl-[9px] pr-1.5 text-left text-[11px] font-medium text-ink ${rsvpClasses(e)}`}
+                        style={
+                          {
+                            "--ev": hueVar(calendarHue(hues, e.calendarId)),
+                          } as React.CSSProperties
+                        }
+                        title={`${e.title} · ${e.calendar}`}
+                        onClick={(ev) =>
+                          useCalendar
+                            .getState()
+                            .openPopover(e, ev.clientX, ev.clientY)
+                        }
+                      >
+                        {e.title}
+                      </button>
+                    ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* scrolling 24-hour grid */}
           <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
             <div
-              className="relative mb-3 ml-14 mr-4"
-              style={{ height: (LAST_HOUR - FIRST_HOUR) * PX_PER_HOUR }}
+              className="relative ml-14 mr-4"
+              style={{ height: GRID_HEIGHT }}
             >
-              {Array.from({ length: LAST_HOUR - FIRST_HOUR }, (_, i) => (
-                <div
-                  key={i}
-                  className="absolute left-0 right-0 border-t border-line"
-                  style={{ top: i * PX_PER_HOUR }}
-                >
-                  <span className="absolute -left-11 -top-2 text-[10.5px] text-ink-3">
-                    {hourLabel(FIRST_HOUR + i)}
+              {Array.from({ length: 24 }, (_, i) => (
+                <div key={i}>
+                  {i > 0 && (
+                    <div
+                      className="absolute left-0 right-0 border-t border-line"
+                      style={{ top: i * PX_PER_HOUR }}
+                    />
+                  )}
+                  <span
+                    className="absolute -left-12 w-10 text-right text-[10.5px] text-ink-3"
+                    style={{ top: i === 0 ? 4 : i * PX_PER_HOUR - 7 }}
+                  >
+                    {hourLabel(i)}
                   </span>
                 </div>
               ))}
               <div className="absolute inset-0 flex">
-                {days.map((d, i) => (
-                  <div
-                    key={d}
-                    ref={(el) => {
-                      colRefs.current[d] = el;
-                    }}
-                    className={`relative flex-1 cursor-crosshair ${i ? "border-l border-line" : ""} ${
-                      d === today ? "bg-ok/5" : ""
-                    } ${d === focusedDay ? "bg-selected/40" : ""}`}
-                    onMouseDown={beginSlotDrag(d)}
-                  >
-                    {(eventsByDay[d] ?? [])
-                      .filter((e) => !e.allDay)
-                      .map((e) => (
-                        <WeekEvent key={e.id} e={e} dayStart={d} />
-                      ))}
-                    {drag?.day === d && (
-                      <div
-                        className="pointer-events-none absolute left-0.5 right-0.5 rounded-[5px] border border-accent/60 bg-accent-dim/70"
-                        style={{
-                          top:
-                            ((Math.min(drag.from, drag.to) - d - FIRST_HOUR * 3600_000) /
-                              3600_000) *
-                            PX_PER_HOUR,
-                          height: Math.max(
-                            (Math.abs(drag.to - drag.from) / 3600_000) * PX_PER_HOUR,
-                            12
-                          ),
-                        }}
-                      />
-                    )}
-                  </div>
-                ))}
-                {today >= weekStart &&
-                  today < weekStart + 7 * DAY_MS &&
-                  nowTop > 0 &&
-                  nowTop < (LAST_HOUR - FIRST_HOUR) * PX_PER_HOUR && (
+                {days.map((d, i) => {
+                  const timed = visible(d).filter((e) => !e.allDay);
+                  const slots = packDay(timed);
+                  return (
                     <div
-                      className="pointer-events-none absolute border-t-2 border-bad"
-                      style={{
-                        top: nowTop,
-                        left: `${(new Date(today).getDay() / 7) * 100}%`,
-                        width: `${100 / 7}%`,
+                      key={d}
+                      ref={(el) => {
+                        colRefs.current[d] = el;
                       }}
+                      className={`relative flex-1 cursor-crosshair ${i ? "border-l border-line" : ""} ${
+                        d === today
+                          ? "bg-[color-mix(in_oklab,var(--accent)_6%,transparent)]"
+                          : ""
+                      } ${d === focusedDay && d !== today ? "bg-selected/40" : ""}`}
+                      onMouseDown={beginSlotDrag(d)}
                     >
-                      <span className="absolute -left-[3px] -top-[4.5px] h-[7px] w-[7px] rounded-full bg-bad" />
+                      {timed.map((e) => (
+                        <WeekEvent
+                          key={e.id}
+                          e={e}
+                          dayStart={d}
+                          slot={slots[e.id] ?? { col: 0, cols: 1 }}
+                          hue={hueVar(calendarHue(hues, e.calendarId))}
+                        />
+                      ))}
+                      {drag?.day === d && (
+                        <div
+                          className="pointer-events-none absolute left-0.5 right-0.5 rounded-[5px] border border-accent/60 bg-accent-dim/70"
+                          style={{
+                            top:
+                              ((Math.min(drag.from, drag.to) - d) / 3600_000) *
+                              PX_PER_HOUR,
+                            height: Math.max(
+                              (Math.abs(drag.to - drag.from) / 3600_000) *
+                                PX_PER_HOUR,
+                              12
+                            ),
+                          }}
+                        />
+                      )}
                     </div>
-                  )}
+                  );
+                })}
+                {today >= weekStart && today < weekStart + 7 * DAY_MS && (
+                  <div
+                    className="pointer-events-none absolute z-[3] border-t-2 border-bad"
+                    style={{
+                      top: nowTop,
+                      left: `${(new Date(today).getDay() / 7) * 100}%`,
+                      width: `${100 / 7}%`,
+                    }}
+                  >
+                    <span className="absolute -left-[3px] -top-[4.5px] h-[7px] w-[7px] rounded-full bg-bad" />
+                  </div>
+                )}
               </div>
             </div>
           </div>
