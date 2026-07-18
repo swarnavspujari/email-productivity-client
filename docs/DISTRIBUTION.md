@@ -92,7 +92,7 @@ next launch).
 ## What testers do (send them this)
 
 1. Download `Snail Mail_…_x64-setup.exe` from
-   <https://github.com/swarnavspujari/email-productivity-client/releases/latest>
+   <https://github.com/swarnavspujari/snail-mail/releases/latest>
 2. Run it. If Windows warns: **More info → Run anyway** (beta is unsigned).
 3. The app opens with a demo inbox. Click through the welcome flow to
    connect Gmail — a browser window asks for Google consent

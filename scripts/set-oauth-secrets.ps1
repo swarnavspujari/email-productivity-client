@@ -38,8 +38,8 @@ $id = [CredMan]::Read("gmail:client_id.ZenBoxMail")
 $secret = [CredMan]::Read("gmail:client_secret.ZenBoxMail")
 if ($id.Length -lt 10 -or $secret.Length -lt 10) { throw "credential looks empty" }
 
-$id | gh secret set ZENBOX_GMAIL_CLIENT_ID --repo swarnavspujari/email-productivity-client
+$id | gh secret set ZENBOX_GMAIL_CLIENT_ID --repo swarnavspujari/snail-mail
 if ($LASTEXITCODE -ne 0) { throw "gh secret set client id failed" }
-$secret | gh secret set ZENBOX_GMAIL_CLIENT_SECRET --repo swarnavspujari/email-productivity-client
+$secret | gh secret set ZENBOX_GMAIL_CLIENT_SECRET --repo swarnavspujari/snail-mail
 if ($LASTEXITCODE -ne 0) { throw "gh secret set client secret failed" }
 Write-Output "OK: ZENBOX_GMAIL_CLIENT_ID ($($id.Length) chars) and ZENBOX_GMAIL_CLIENT_SECRET ($($secret.Length) chars) set"

@@ -14,8 +14,8 @@
 ## 2. Build and run
 
 ```powershell
-git clone https://github.com/swarnavspujari/email-productivity-client.git
-cd email-productivity-client
+git clone https://github.com/swarnavspujari/snail-mail.git
+cd snail-mail
 npm install
 npm run app:dev
 ```
