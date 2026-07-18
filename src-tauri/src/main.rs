@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    fission_mail_lib::run()
+    snail_mail_lib::run()
 }

@@ -41,20 +41,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Baked-in beta OAuth client so testers skip the Google-console setup
           # (optional — builds without it still accept pasted credentials).
-          # New env-var names read from the existing repo secrets; the Rust code
-          # also falls back to the legacy ZENBOX_* env for older builds.
-          FISSION_GMAIL_CLIENT_ID: ${{ secrets.ZENBOX_GMAIL_CLIENT_ID }}
-          FISSION_GMAIL_CLIENT_SECRET: ${{ secrets.ZENBOX_GMAIL_CLIENT_SECRET }}
+          # New env-var names read from the existing repo secrets — the secret
+          # names deliberately keep their historical ZENBOX_*/FISSION_* prefixes
+          # so no repo reconfiguration is needed; the Rust code also falls back
+          # to the legacy FISSION_*/ZENBOX_* env for older builds.
+          SNAIL_GMAIL_CLIENT_ID: ${{ secrets.ZENBOX_GMAIL_CLIENT_ID }}
+          SNAIL_GMAIL_CLIENT_SECRET: ${{ secrets.ZENBOX_GMAIL_CLIENT_SECRET }}
           # Baked Unsplash Access Key for the daily empty-state photo
           # (optional — builds without it just skip the photo; users can
           # paste their own key in Settings).
-          FISSION_UNSPLASH_ACCESS_KEY: ${{ secrets.FISSION_UNSPLASH_ACCESS_KEY }}
+          SNAIL_UNSPLASH_ACCESS_KEY: ${{ secrets.FISSION_UNSPLASH_ACCESS_KEY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Fission Mail ${{ github.ref_name }}"
+          releaseName: "Snail Mail ${{ github.ref_name }}"
           releaseBody: |
-            Fission Mail ${{ github.ref_name }} — download the Windows installer
-            below (`Fission.Mail_*_x64-setup.exe`). Existing installs update
+            Snail Mail ${{ github.ref_name }} — download the Windows installer
+            below (`Snail.Mail_*_x64-setup.exe`). Existing installs update
             themselves automatically.
           releaseDraft: false
           prerelease: false

@@ -1,11 +1,12 @@
 //! OS-keychain storage (Windows Credential Manager via the `keyring` crate).
-//! Every secret Fission holds lives here: AI keys and Gmail OAuth material.
+//! Every secret Snail Mail holds lives here: AI keys and Gmail OAuth material.
 //! Values never appear in logs, errors, or the SQLite file.
 
-const SERVICE: &str = "FissionMail";
-/// Pre-rename service name. Secrets are read from here as a fallback and copied
-/// forward on first access, so existing installs keep their tokens + AI keys.
-const LEGACY_SERVICE: &str = "ZenBoxMail";
+const SERVICE: &str = "SnailMail";
+/// Pre-rename service names, newest first. Secrets are read from these as a
+/// fallback and copied forward on first access, so installs from any earlier
+/// brand keep their tokens + AI keys.
+const LEGACY_SERVICES: [&str; 2] = ["FissionMail", "ZenBoxMail"];
 
 pub const AI_CLAUDE: &str = "ai:claude";
 pub const AI_OPENAI: &str = "ai:openai";
@@ -41,23 +42,101 @@ pub fn set(name: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn get(name: &str) -> Option<String> {
-    if let Ok(e) = entry(name) {
-        if let Ok(v) = e.get_password() {
-            return Some(v);
-        }
-    }
-    // Fall back to the pre-rename service and migrate the value forward.
-    if let Ok(old) = keyring::Entry::new(LEGACY_SERVICE, name) {
-        if let Ok(v) = old.get_password() {
-            let _ = set(name, &v);
-            return Some(v);
-        }
-    }
-    None
+    chain_get(SERVICE, &LEGACY_SERVICES, name)
 }
 
 pub fn delete(name: &str) {
     if let Ok(e) = entry(name) {
         let _ = e.delete_credential();
+    }
+}
+
+/// Read `name` from `primary`, else from each legacy service in order; a
+/// legacy hit is copied forward to `primary` so the next read is direct.
+fn chain_get(primary: &str, legacy: &[&str], name: &str) -> Option<String> {
+    if let Ok(e) = keyring::Entry::new(primary, name) {
+        if let Ok(v) = e.get_password() {
+            return Some(v);
+        }
+    }
+    for svc in legacy {
+        if let Ok(old) = keyring::Entry::new(svc, name) {
+            if let Ok(v) = old.get_password() {
+                if let Ok(e) = keyring::Entry::new(primary, name) {
+                    let _ = e.set_password(&v);
+                }
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chain_get;
+
+    /// Real OS-keychain entries under throwaway service names, wiped before
+    /// and after each test so nothing lingers in Credential Manager.
+    struct Scratch(&'static [&'static str], &'static str);
+    impl Scratch {
+        fn new(services: &'static [&'static str], name: &'static str) -> Self {
+            let s = Scratch(services, name);
+            s.wipe();
+            s
+        }
+        fn wipe(&self) {
+            for svc in self.0 {
+                if let Ok(e) = keyring::Entry::new(svc, self.1) {
+                    let _ = e.delete_credential();
+                }
+            }
+        }
+        fn set(&self, svc: &str, value: &str) {
+            keyring::Entry::new(svc, self.1).unwrap().set_password(value).unwrap();
+        }
+        fn get(&self, svc: &str) -> Option<String> {
+            keyring::Entry::new(svc, self.1).ok()?.get_password().ok()
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            self.wipe();
+        }
+    }
+
+    const NEW: &str = "SnailHopTestNew";
+    const MID: &str = "SnailHopTestMid";
+    const OLD: &str = "SnailHopTestOld";
+
+    #[test]
+    fn primary_wins_when_present_everywhere() {
+        let s = Scratch::new(&[NEW, MID, OLD], "t:primary");
+        s.set(NEW, "new-v");
+        s.set(MID, "mid-v");
+        assert_eq!(chain_get(NEW, &[MID, OLD], "t:primary").as_deref(), Some("new-v"));
+    }
+
+    #[test]
+    fn legacy_hit_is_returned_and_copied_forward() {
+        let s = Scratch::new(&[NEW, MID, OLD], "t:copy-fwd");
+        s.set(OLD, "old-v");
+        assert_eq!(chain_get(NEW, &[MID, OLD], "t:copy-fwd").as_deref(), Some("old-v"));
+        // migrated: the next read finds it under the primary service
+        assert_eq!(s.get(NEW).as_deref(), Some("old-v"));
+    }
+
+    #[test]
+    fn newer_legacy_service_wins_over_older() {
+        let s = Scratch::new(&[NEW, MID, OLD], "t:order");
+        s.set(MID, "mid-v");
+        s.set(OLD, "old-v");
+        assert_eq!(chain_get(NEW, &[MID, OLD], "t:order").as_deref(), Some("mid-v"));
+    }
+
+    #[test]
+    fn absent_everywhere_is_none() {
+        let _s = Scratch::new(&[NEW, MID, OLD], "t:absent");
+        assert_eq!(chain_get(NEW, &[MID, OLD], "t:absent"), None);
     }
 }

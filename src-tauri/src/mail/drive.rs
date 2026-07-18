@@ -15,7 +15,31 @@ use serde_json::{json, Value};
 const FILES: &str = "https://www.googleapis.com/drive/v3/files";
 const UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const FILE_FIELDS: &str = "id,name,mimeType,size,webViewLink,iconLink,modifiedTime,owners(displayName)";
-pub const APP_FOLDER_NAME: &str = "Fission Mail Attachments";
+pub const APP_FOLDER_NAME: &str = "Snail Mail Attachments";
+/// Pre-rename folder name — existing installs keep uploading into it rather
+/// than growing a duplicate folder.
+const LEGACY_FOLDER_NAME: &str = "Fission Mail Attachments";
+
+/// Match the app folder under its current OR pre-rename name, in My Drive root.
+fn app_folder_query() -> String {
+    format!(
+        "(name = '{}' or name = '{}') and mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'root' in parents",
+        escape_q(APP_FOLDER_NAME),
+        escape_q(LEGACY_FOLDER_NAME)
+    )
+}
+
+/// Prefer a folder already carrying the current name; else the legacy one;
+/// else whatever single hit Drive returned.
+fn pick_app_folder(v: &Value) -> Option<String> {
+    let files = v["files"].as_array()?;
+    for want in [APP_FOLDER_NAME, LEGACY_FOLDER_NAME] {
+        if let Some(f) = files.iter().find(|f| f["name"].as_str() == Some(want)) {
+            return f["id"].as_str().map(str::to_string);
+        }
+    }
+    files.first().and_then(|f| f["id"].as_str()).map(str::to_string)
+}
 /// Attach-as-copy ceiling — Gmail's inline attachment limit (bytes).
 pub const INLINE_LIMIT: i64 = 25_000_000;
 
@@ -167,14 +191,13 @@ pub async fn find_or_create_app_folder(
     http: &reqwest::Client,
     session: &mut GmailSession,
 ) -> Result<String, String> {
-    let q = format!(
-        "name = '{}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and 'root' in parents",
-        escape_q(APP_FOLDER_NAME)
+    let url = format!(
+        "{FILES}?q={}&fields=files(id,name)&pageSize=10",
+        urlenc(&app_folder_query())
     );
-    let url = format!("{FILES}?q={}&fields=files(id)&pageSize=1", urlenc(&q));
     let v = session.get_json(http, &url).await.map_err(|e| classify(&e))?;
-    if let Some(id) = v["files"][0]["id"].as_str() {
-        return Ok(id.to_string());
+    if let Some(id) = pick_app_folder(&v) {
+        return Ok(id);
     }
     let token = session.bearer(http).await?;
     let resp = http
@@ -378,5 +401,40 @@ pub async fn share(
             Ok(failed)
         }
         _ => Err("invalid share mode".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_folder_query_matches_current_and_legacy_names() {
+        let q = app_folder_query();
+        assert!(q.contains("name = 'Snail Mail Attachments'"), "current name missing: {q}");
+        assert!(q.contains("or name = 'Fission Mail Attachments'"), "legacy name missing: {q}");
+        assert!(q.contains("mimeType = 'application/vnd.google-apps.folder'"));
+        assert!(q.contains("trashed = false"));
+        assert!(q.contains("'root' in parents"));
+    }
+
+    #[test]
+    fn pick_prefers_the_current_name_when_both_folders_exist() {
+        let v = json!({ "files": [
+            { "id": "legacy-id", "name": "Fission Mail Attachments" },
+            { "id": "snail-id", "name": "Snail Mail Attachments" },
+        ]});
+        assert_eq!(pick_app_folder(&v).as_deref(), Some("snail-id"));
+    }
+
+    #[test]
+    fn pick_keeps_using_a_legacy_folder() {
+        let v = json!({ "files": [{ "id": "legacy-id", "name": "Fission Mail Attachments" }] });
+        assert_eq!(pick_app_folder(&v).as_deref(), Some("legacy-id"));
+    }
+
+    #[test]
+    fn pick_none_when_drive_has_neither() {
+        assert_eq!(pick_app_folder(&json!({ "files": [] })), None);
     }
 }

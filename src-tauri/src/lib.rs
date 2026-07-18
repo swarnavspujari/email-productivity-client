@@ -1,4 +1,4 @@
-//! Fission Mail core: IPC surface, app state, and the background loop.
+//! Snail Mail core: IPC surface, app state, and the background loop.
 //! Every command validates its inputs; every secret stays in the keychain.
 mod ai;
 mod embed;
@@ -53,15 +53,21 @@ struct DriveUpload {
 // cannot keep secrets by design — Google's model accepts an embedded id/secret
 // for installed apps (PKCE still guards the flow). Keychain-pasted credentials
 // always win over these.
-// Prefer the FISSION_* build-time env; fall back to the legacy ZENBOX_* so the
-// existing CI repo secret keeps working through the rename.
-const BAKED_GMAIL_CLIENT_ID: Option<&str> = match option_env!("FISSION_GMAIL_CLIENT_ID") {
+// Prefer the SNAIL_* build-time env; fall back to the legacy FISSION_* then
+// ZENBOX_* so the existing CI repo secrets keep working through the renames.
+const BAKED_GMAIL_CLIENT_ID: Option<&str> = match option_env!("SNAIL_GMAIL_CLIENT_ID") {
     Some(v) => Some(v),
-    None => option_env!("ZENBOX_GMAIL_CLIENT_ID"),
+    None => match option_env!("FISSION_GMAIL_CLIENT_ID") {
+        Some(v) => Some(v),
+        None => option_env!("ZENBOX_GMAIL_CLIENT_ID"),
+    },
 };
-const BAKED_GMAIL_CLIENT_SECRET: Option<&str> = match option_env!("FISSION_GMAIL_CLIENT_SECRET") {
+const BAKED_GMAIL_CLIENT_SECRET: Option<&str> = match option_env!("SNAIL_GMAIL_CLIENT_SECRET") {
     Some(v) => Some(v),
-    None => option_env!("ZENBOX_GMAIL_CLIENT_SECRET"),
+    None => match option_env!("FISSION_GMAIL_CLIENT_SECRET") {
+        Some(v) => Some(v),
+        None => option_env!("ZENBOX_GMAIL_CLIENT_SECRET"),
+    },
 };
 
 const BUNDLED_CELEBRATIONS: [&str; 4] = [
@@ -1470,7 +1476,7 @@ fn notify_new_mail(app: &AppHandle, since_ms: i64) {
         let _ = app
             .notification()
             .builder()
-            .title("Fission Mail")
+            .title("Snail Mail")
             .body("…and more new mail")
             .show();
     }
@@ -2032,7 +2038,8 @@ async fn drive_download_attach(
     mail::drive::download(&state.http, session, &file_id).await
 }
 
-/// The account's "Fission Mail Attachments" folder id, kv-cached and
+/// The account's "Snail Mail Attachments" folder id (a pre-rename "Fission
+/// Mail Attachments" folder keeps being found and used), kv-cached and
 /// re-created if the cached one was deleted.
 async fn drive_app_folder(
     state: &State<'_, AppState>,
@@ -3265,25 +3272,13 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
+            // Migrate a pre-rename install: each earlier bundle identifier
+            // (com.fission.mail, and com.zenbox.mail before it) had its own
+            // app-data dir. Copy the db + WAL sidecars once so accounts +
+            // cached mail carry over. Keychain secrets migrate lazily in
+            // secrets::get.
+            migrate_legacy_db(&data_dir);
             let db_path = data_dir.join("fission.db");
-            // Migrate a pre-rename install: the old bundle identifier
-            // (com.zenbox.mail) had its own app-data dir with zenbox.db. Copy it
-            // (with its WAL sidecars) once so accounts + cached mail carry over.
-            // Keychain secrets migrate lazily in secrets::get.
-            if !db_path.exists() {
-                if let Some(old_dir) = data_dir.parent().map(|p| p.join("com.zenbox.mail")) {
-                    for (from, to) in [
-                        ("zenbox.db", "fission.db"),
-                        ("zenbox.db-wal", "fission.db-wal"),
-                        ("zenbox.db-shm", "fission.db-shm"),
-                    ] {
-                        let src = old_dir.join(from);
-                        if src.exists() {
-                            let _ = std::fs::copy(&src, data_dir.join(to));
-                        }
-                    }
-                }
-            }
             let conn = store::open(&db_path).map_err(std::io::Error::other)?;
 
             let accounts = store::get_accounts(&conn);
@@ -3384,11 +3379,15 @@ pub fn run() {
                 embedder: tokio::sync::Mutex::new(embed::Slot::Idle),
             });
 
-            // Dev-only: FISSION_AI_SMOKE=1 streams one real draft at startup and
-            // logs the result — end-to-end proof of context assembly + adapter
-            // + SSE parsing against the configured default provider.
+            // Dev-only: SNAIL_AI_SMOKE=1 (legacy FISSION_AI_SMOKE) streams one
+            // real draft at startup and logs the result — end-to-end proof of
+            // context assembly + adapter + SSE parsing against the configured
+            // default provider.
             #[cfg(debug_assertions)]
-            if std::env::var("FISSION_AI_SMOKE").is_ok() {
+            if std::env::var("SNAIL_AI_SMOKE")
+                .or_else(|_| std::env::var("FISSION_AI_SMOKE"))
+                .is_ok()
+            {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = handle.state::<AppState>();
@@ -3689,5 +3688,125 @@ pub fn run() {
             list_celebration_images,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Fission Mail");
+        .expect("error while running Snail Mail");
+}
+
+// ------------------------------------------------------------- db migration
+
+/// One-time data-dir hop across bundle-identifier renames. When `data_dir`
+/// (com.snail.mail) has no fission.db yet, copy the db + WAL sidecars from the
+/// most recent previous identifier's dir that has one: com.fission.mail first,
+/// then com.zenbox.mail (whose files were still named zenbox.db*). The db
+/// filename intentionally stays fission.db — renaming it buys nothing and
+/// risks live data. Keychain secrets migrate lazily in secrets::get.
+fn migrate_legacy_db(data_dir: &std::path::Path) {
+    if data_dir.join("fission.db").exists() {
+        return;
+    }
+    let Some(parent) = data_dir.parent() else { return };
+    // Newest identifier first: a machine that lived through the previous
+    // rename has both dirs, and com.fission.mail holds the current data.
+    for (dir, base) in [("com.fission.mail", "fission.db"), ("com.zenbox.mail", "zenbox.db")] {
+        let old_dir = parent.join(dir);
+        if !old_dir.join(base).exists() {
+            continue;
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let src = old_dir.join(format!("{base}{suffix}"));
+            if src.exists() {
+                let _ = std::fs::copy(&src, data_dir.join(format!("fission.db{suffix}")));
+            }
+        }
+        return;
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::migrate_legacy_db;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// Fresh scratch parent dir per test, mimicking the OS app-data root that
+    /// holds one subdir per bundle identifier.
+    fn appdata_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join("snail-db-hop-tests").join(name);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn seed(root: &PathBuf, identifier: &str, files: &[(&str, &str)]) {
+        let dir = root.join(identifier);
+        fs::create_dir_all(&dir).unwrap();
+        for (name, content) in files {
+            fs::write(dir.join(name), content).unwrap();
+        }
+    }
+
+    fn read(root: &PathBuf, rel: &str) -> Option<String> {
+        fs::read_to_string(root.join("com.snail.mail").join(rel)).ok()
+    }
+
+    #[test]
+    fn copies_fission_db_and_sidecars_from_previous_identifier_dir() {
+        let root = appdata_root("from-fission");
+        seed(&root, "com.fission.mail", &[
+            ("fission.db", "db-bytes"),
+            ("fission.db-wal", "wal-bytes"),
+            ("fission.db-shm", "shm-bytes"),
+        ]);
+        let data_dir = root.join("com.snail.mail");
+        fs::create_dir_all(&data_dir).unwrap();
+        migrate_legacy_db(&data_dir);
+        assert_eq!(read(&root, "fission.db").as_deref(), Some("db-bytes"));
+        assert_eq!(read(&root, "fission.db-wal").as_deref(), Some("wal-bytes"));
+        assert_eq!(read(&root, "fission.db-shm").as_deref(), Some("shm-bytes"));
+    }
+
+    #[test]
+    fn chains_back_to_zenbox_when_no_fission_dir_exists() {
+        let root = appdata_root("from-zenbox");
+        seed(&root, "com.zenbox.mail", &[
+            ("zenbox.db", "zen-db"),
+            ("zenbox.db-wal", "zen-wal"),
+        ]);
+        let data_dir = root.join("com.snail.mail");
+        fs::create_dir_all(&data_dir).unwrap();
+        migrate_legacy_db(&data_dir);
+        // zenbox files land under the current fission.db name
+        assert_eq!(read(&root, "fission.db").as_deref(), Some("zen-db"));
+        assert_eq!(read(&root, "fission.db-wal").as_deref(), Some("zen-wal"));
+        // missing sidecar is tolerated, not invented
+        assert_eq!(read(&root, "fission.db-shm"), None);
+    }
+
+    #[test]
+    fn prefers_fission_over_zenbox_when_both_exist() {
+        let root = appdata_root("prefers-fission");
+        seed(&root, "com.zenbox.mail", &[("zenbox.db", "stale")]);
+        seed(&root, "com.fission.mail", &[("fission.db", "current")]);
+        let data_dir = root.join("com.snail.mail");
+        fs::create_dir_all(&data_dir).unwrap();
+        migrate_legacy_db(&data_dir);
+        assert_eq!(read(&root, "fission.db").as_deref(), Some("current"));
+    }
+
+    #[test]
+    fn never_overwrites_an_existing_db() {
+        let root = appdata_root("no-overwrite");
+        seed(&root, "com.fission.mail", &[("fission.db", "old-machine-state")]);
+        seed(&root, "com.snail.mail", &[("fission.db", "live")]);
+        migrate_legacy_db(&root.join("com.snail.mail"));
+        assert_eq!(read(&root, "fission.db").as_deref(), Some("live"));
+    }
+
+    #[test]
+    fn fresh_install_with_no_legacy_dirs_is_a_no_op() {
+        let root = appdata_root("fresh");
+        let data_dir = root.join("com.snail.mail");
+        fs::create_dir_all(&data_dir).unwrap();
+        migrate_legacy_db(&data_dir);
+        assert_eq!(read(&root, "fission.db"), None);
+    }
 }

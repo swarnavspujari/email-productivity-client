@@ -1,4 +1,4 @@
-# Fission Mail
+# Snail Mail
 
 A **keyboard-first, AI-native desktop email client** in the spirit of Superhuman — built with Tauri v2 (Rust core + system webview), React, and your own AI keys. Local-first: your mail cache, your settings, and your API keys never leave your machine.
 
@@ -25,7 +25,7 @@ A **keyboard-first, AI-native desktop email client** in the spirit of Superhuman
 
 Grab the latest Windows installer from the
 [**Releases page**](https://github.com/swarnavspujari/email-productivity-client/releases/latest)
-(`Fission Mail_…_x64-setup.exe`). Windows will warn that the beta isn't
+(`Snail Mail_…_x64-setup.exe`). Windows will warn that the beta isn't
 code-signed yet — click **More info → Run anyway**. The app updates itself
 automatically from then on. Details in [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 

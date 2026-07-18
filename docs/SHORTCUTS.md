@@ -102,16 +102,16 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Actions
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
-| Superhuman Command | `Ctrl+K` | ✅ | Fission Command |
+| Superhuman Command | `Ctrl+K` | ✅ | Snail Mail Command |
 | Search | `/` | ✅ | |
 | Undo | `Z` | ✅ | `Ctrl+Z` too |
 | Ask AI | `?` | ✅ | Ask AI about the open thread |
 
 ## Navigation
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Next / Previous Conversation | `J` `K` | ✅ | |
 | Next / Previous Message | `N` `P` | 🔜 | per-message nav inside a thread |
@@ -126,7 +126,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Conversations
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Mark Done (Archive) | `E` | ✅ | |
 | Mark not Done | `Shift+E` | ✅ | restores from Trash too |
@@ -149,7 +149,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Labels
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Move | `V` | ✅ | |
 | Add or Remove Label | `L` | ✅ | opens the Move / Label picker (v0.14) |
@@ -159,7 +159,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Messages
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Compose | `C` | ✅ | |
 | Reply All | `Enter` | ✅ | `A` works too |
@@ -175,7 +175,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Compose
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | To / Cc / Bcc | `Ctrl+Shift+O/C/B` | ✅ | |
 | From | `Ctrl+Shift+F` | 🔜 | send-as identities |
@@ -198,7 +198,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Format
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Bold / Italics / Underline | `Ctrl+B/I/U` | ✅ | in compose |
 | Hyperlink | `Ctrl+K` | ✅ | in compose (palette elsewhere) |
@@ -211,7 +211,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Folders
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Go to Inbox / Important | `G`,`I` | ✅ | Important split |
 | Go to Other | `G`,`O` | ✅ | |
@@ -233,7 +233,7 @@ The complete Superhuman shortcut sheet (transcribed from their current Windows b
 
 ## Calendar
 
-| Superhuman | Keys | Status | Fission notes |
+| Superhuman | Keys | Status | Snail Mail notes |
 |---|---|---|---|
 | Open Day | `0` | ✅ | the day panel (v0.14) |
 | Open Week | `2` | ✅ | `G`,`C` too (v0.14) |

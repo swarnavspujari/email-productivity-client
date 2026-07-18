@@ -1,7 +1,9 @@
-# Reads the Fission Gmail OAuth client from Windows Credential Manager and
+# Reads the Snail Mail Gmail OAuth client from Windows Credential Manager and
 # pushes it to GitHub Actions secrets. Values are never printed.
-# NOTE: the keychain service is still "ZenBoxMail" (secrets migrate lazily) and
-# the CI secret names stay ZENBOX_* to match .github/workflows/release.yml.
+# NOTE: this reads the original "ZenBoxMail" keychain entries (lazy migration
+# copies forward but never deletes, so they remain valid) and the CI secret
+# names stay ZENBOX_* to match .github/workflows/release.yml, which maps them
+# onto the SNAIL_* build env.
 $ErrorActionPreference = "Stop"
 
 Add-Type -TypeDefinition @"

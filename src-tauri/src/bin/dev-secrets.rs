@@ -1,12 +1,13 @@
-//! Dev utility: seed or check Fission keychain entries without launching the
-//! app. Values come from the FISSION_SECRET_VALUE env var — never from argv,
-//! never printed — so secrets stay out of shell history and logs.
+//! Dev utility: seed or check Snail Mail keychain entries without launching
+//! the app. Values come from the SNAIL_SECRET_VALUE env var (legacy
+//! FISSION_SECRET_VALUE still accepted) — never from argv, never printed — so
+//! secrets stay out of shell history and logs.
 //!
-//!   FISSION_SECRET_VALUE=... cargo run --bin dev-secrets -- set ai:nim
+//!   SNAIL_SECRET_VALUE=... cargo run --bin dev-secrets -- set ai:nim
 //!   cargo run --bin dev-secrets -- check ai:nim
 //!   cargo run --bin dev-secrets -- delete ai:nim
 
-const SERVICE: &str = "FissionMail";
+const SERVICE: &str = "SnailMail";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -20,8 +21,9 @@ fn main() {
     let entry = keyring::Entry::new(SERVICE, name).expect("keychain unavailable");
     match cmd {
         "set" => {
-            let value = std::env::var("FISSION_SECRET_VALUE")
-                .expect("FISSION_SECRET_VALUE env var not set");
+            let value = std::env::var("SNAIL_SECRET_VALUE")
+                .or_else(|_| std::env::var("FISSION_SECRET_VALUE"))
+                .expect("SNAIL_SECRET_VALUE env var not set");
             entry.set_password(value.trim()).expect("could not write to keychain");
             println!("stored {name} ({} chars)", value.trim().len());
         }

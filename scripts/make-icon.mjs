@@ -1,63 +1,117 @@
-// Generates the Fission app icon (512x512 PNG): a dark rounded square with a
-// deep indigo "Z". Zero image dependencies — hand-encodes the PNG.
+// Generates the Snail Mail app icon (512x512 PNG) by rasterizing
+// design/assets/snail-mail-app-tile.svg — the traced snail mark on its
+// cerulean rounded tile. Zero image dependencies: the tile's paths are pure
+// M/L/Z polygons, so a scanline even-odd fill + 3x supersampling is enough,
+// and the PNG is hand-encoded like before. Feed the output to `tauri icon`.
 import { deflateSync } from "node:zlib";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 
-const S = 512;
-const px = new Uint8Array(S * S * 4);
+const svg = readFileSync("design/assets/snail-mail-app-tile.svg", "utf8");
 
-const bg = [14, 16, 20]; // --bg-base
-const tile = [27, 31, 39]; // --bg-raised
-const accent = [109, 127, 242]; // --accent
-const accentHi = [132, 150, 255];
+// ---- parse the tile: outer rounded rect + positioned inner svg + polygons
+const rect = svg.match(/<rect width="512" height="512" rx="([\d.]+)" fill="(#[0-9a-fA-F]{6})"/);
+if (!rect) throw new Error("tile rect not found");
+const CORNER = Number(rect[1]);
+const TILE_BG = hex(rect[2]);
 
-const R = 96; // corner radius
-const inside = (x, y) => {
-  const m = 16; // margin
-  const x0 = m, y0 = m, x1 = S - m, y1 = S - m;
-  if (x < x0 || x >= x1 || y < y0 || y >= y1) return false;
-  const cx = Math.max(x0 + R, Math.min(x, x1 - R));
-  const cy = Math.max(y0 + R, Math.min(y, y1 - R));
-  return (x - cx) ** 2 + (y - cy) ** 2 <= R * R || (x >= x0 + R && x < x1 - R) || (y >= y0 + R && y < y1 - R);
-};
+const inner = svg.match(/<svg x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" viewBox="([\d. ]+)"/);
+if (!inner) throw new Error("inner svg not found");
+const [ix, iy, iw, ih] = [1, 2, 3, 4].map((i) => Number(inner[i]));
+const [, , vbW, vbH] = inner[5].split(/\s+/).map(Number);
+// preserveAspectRatio="xMidYMid meet"
+const scale = Math.min(iw / vbW, ih / vbH);
+const tx = ix + (iw - vbW * scale) / 2;
+const ty = iy + (ih - vbH * scale) / 2;
 
-// "Z" geometry
-const zx0 = 136, zx1 = 376, zy0 = 136, zy1 = 376, bar = 54;
-const inZ = (x, y) => {
-  if (x < zx0 || x >= zx1 || y < zy0 || y >= zy1) return false;
-  if (y < zy0 + bar) return true; // top bar
-  if (y >= zy1 - bar) return true; // bottom bar
-  // diagonal from top-right to bottom-left
-  const t = (y - (zy0 + bar)) / (zy1 - bar - (zy0 + bar));
-  const cx = zx1 - bar / 2 - t * (zx1 - zx0 - bar);
-  return Math.abs(x - cx) <= bar * 0.72;
-};
-
-for (let y = 0; y < S; y++) {
-  for (let x = 0; x < S; x++) {
-    const i = (y * S + x) * 4;
-    let c = [0, 0, 0, 0];
-    if (inside(x, y)) {
-      // subtle vertical sheen on the tile
-      const sheen = 1 + 0.10 * (1 - y / S);
-      c = [tile[0] * sheen, tile[1] * sheen, tile[2] * sheen, 255];
-      if (inZ(x, y)) {
-        const t = y / S;
-        c = [
-          accent[0] * (1 - t) + accentHi[0] * t,
-          accent[1] * (1 - t) + accentHi[1] * t,
-          accent[2] * (1 - t) + accentHi[2] * t,
-          255,
-        ];
-      }
-    } else if (x > 0 && y > 0) {
-      c = [bg[0], bg[1], bg[2], 0];
+const layers = []; // in document order; later layers paint over earlier ones
+for (const m of svg.matchAll(/<path fill="(#[0-9a-fA-F]{6})" d="([^"]+)"/g)) {
+  const color = hex(m[1]);
+  const subpaths = [];
+  let cur = null;
+  const tokens = m[2].match(/[MLZ]|-?[\d.]+/g) ?? [];
+  for (let i = 0; i < tokens.length; ) {
+    const t = tokens[i];
+    if (t === "M") {
+      cur = [[Number(tokens[i + 1]), Number(tokens[i + 2])]];
+      subpaths.push(cur);
+      i += 3;
+    } else if (t === "L") {
+      cur.push([Number(tokens[i + 1]), Number(tokens[i + 2])]);
+      i += 3;
+    } else if (t === "Z") {
+      i += 1; // subpaths are implicitly closed below
+    } else {
+      throw new Error(`unsupported path token ${t} — the tile is M/L/Z only`);
     }
-    px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2]; px[i + 3] = c[3];
+  }
+  layers.push({ color, subpaths });
+}
+if (layers.length === 0) throw new Error("no polygon paths found");
+
+function hex(h) {
+  return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+}
+
+// ---- rasterize at 3x, scanline even-odd fill per layer, then box-downsample
+const S = 512;
+const SS = 3;
+const N = S * SS;
+// 0 = transparent, 1 = tile background, 2+k = layers[k]
+const idx = new Uint8Array(N * N);
+
+for (let Y = 0; Y < N; Y++) {
+  const dy = (Y + 0.5) / SS; // device y in 512-space
+  // rounded-rect row extent (circle-corner inset near top/bottom edges)
+  const edge = dy < CORNER ? CORNER - dy : dy > S - CORNER ? dy - (S - CORNER) : 0;
+  const inset = CORNER - Math.sqrt(Math.max(0, CORNER * CORNER - edge * edge));
+  const x0 = Math.max(0, Math.ceil(inset * SS - 0.5));
+  const x1 = Math.min(N - 1, Math.floor((S - inset) * SS - 0.5));
+  idx.fill(1, Y * N + x0, Y * N + x1 + 1);
+
+  // polygon layers, document order
+  const v = (dy - ty) / scale; // svg-space y of this row
+  for (let k = 0; k < layers.length; k++) {
+    const xs = [];
+    for (const sp of layers[k].subpaths) {
+      for (let e = 0; e < sp.length; e++) {
+        const [ax, ay] = sp[e];
+        const [bx, by] = sp[(e + 1) % sp.length]; // includes the closing edge
+        if (ay <= v !== by <= v) xs.push(ax + ((v - ay) * (bx - ax)) / (by - ay));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    for (let p = 0; p + 1 < xs.length; p += 2) {
+      const from = Math.max(x0, Math.ceil((xs[p] * scale + tx) * SS - 0.5));
+      const to = Math.min(x1, Math.floor((xs[p + 1] * scale + tx) * SS - 0.5));
+      if (to >= from) idx.fill(2 + k, Y * N + from, Y * N + to + 1);
+    }
   }
 }
 
-// PNG encode (filter 0 per scanline)
+// ---- downsample 3x3 → 512 (premultiplied average so edges blend cleanly)
+const palette = [[0, 0, 0], TILE_BG, ...layers.map((l) => l.color)];
+const px = new Uint8Array(S * S * 4);
+for (let y = 0; y < S; y++) {
+  for (let x = 0; x < S; x++) {
+    let r = 0, g = 0, b = 0, a = 0;
+    for (let sy = 0; sy < SS; sy++) {
+      for (let sx = 0; sx < SS; sx++) {
+        const i = idx[(y * SS + sy) * N + (x * SS + sx)];
+        if (i === 0) continue;
+        const c = palette[i];
+        r += c[0]; g += c[1]; b += c[2]; a += 255;
+      }
+    }
+    const o = (y * S + x) * 4;
+    const n = SS * SS;
+    px[o] = a ? Math.round((r / a) * 255) : 0;
+    px[o + 1] = a ? Math.round((g / a) * 255) : 0;
+    px[o + 2] = a ? Math.round((b / a) * 255) : 0;
+    px[o + 3] = Math.round(a / n);
+  }
+}
+
+// ---- PNG encode (filter 0 per scanline)
 const raw = Buffer.alloc(S * (S * 4 + 1));
 for (let y = 0; y < S; y++) {
   raw[y * (S * 4 + 1)] = 0;

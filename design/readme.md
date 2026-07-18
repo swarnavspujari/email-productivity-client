@@ -5,7 +5,7 @@
 This design system captures Snail Mail's real visual language so designers and agents can build on-brand screens, prototypes, and marketing assets.
 
 > **Sources used to build this system**
-> - **Product codebase:** https://github.com/swarnavspujari/email-productivity-client (the client; the repo's package is named `zenbox-mail` internally — Snail Mail is the product brand). Design tokens originate from `src/styles/theme.css`, here evolved to the **Cerulean** palette (a blue pulled ~40% toward green) and a **Material Design 3** tonal dark mode; components and UI kit are recreated from `src/features/**` and `src/components/**`.
+> - **Product codebase:** https://github.com/swarnavspujari/email-productivity-client (the client; the repo's package is named `snail-mail` — Snail Mail is the product brand). Design tokens originate from `src/styles/theme.css`, here evolved to the **Cerulean** palette (a blue pulled ~40% toward green) and a **Material Design 3** tonal dark mode; components and UI kit are recreated from `src/features/**` and `src/components/**`.
 > - **Brand logos:** provided by the user — the rocket-snail lockup + icon (`assets/snail-mail-logo.svg`, `assets/snail-mail-icon.svg`), with reversed and app-tile variants derived from them.
 > - **Design philosophy:** Superhuman's "How to design delightful dark themes" (blog.superhuman.com) informs the dark-theme rules below, and reference screenshots of Superhuman Mail informed the *feature set and layout patterns* (split inbox, command palette, instant reply, contact rail, auto-labels, calendar).
 >

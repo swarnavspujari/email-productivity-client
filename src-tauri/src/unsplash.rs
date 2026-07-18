@@ -14,7 +14,12 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const BAKED_ACCESS_KEY: Option<&str> = option_env!("FISSION_UNSPLASH_ACCESS_KEY");
+// SNAIL_* preferred; the legacy FISSION_* name keeps the existing CI repo
+// secret working through the rename.
+pub const BAKED_ACCESS_KEY: Option<&str> = match option_env!("SNAIL_UNSPLASH_ACCESS_KEY") {
+    Some(v) => Some(v),
+    None => option_env!("FISSION_UNSPLASH_ACCESS_KEY"),
+};
 
 pub const KV_PHOTO: &str = "unsplash:daily";
 const KV_HOURLY: &str = "unsplash:hourly";

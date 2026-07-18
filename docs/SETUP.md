@@ -30,7 +30,7 @@ The first Rust build compiles the whole dependency tree (several minutes). After
 > [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md)). Creating your own client is only for
 > building from source or if you prefer your own quota.
 
-Fission talks to Gmail directly from your machine, so you can bring your own OAuth client. Nothing about this client is shared with anyone.
+Snail Mail talks to Gmail directly from your machine, so you can bring your own OAuth client. Nothing about this client is shared with anyone.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with any Google account (it does **not** have to be the mail account you'll connect).
 2. Top bar → project selector → **New project**. Name it e.g. `fission-mail`, Create, and make sure it's selected.
@@ -42,7 +42,7 @@ Fission talks to Gmail directly from your machine, so you can bring your own OAu
 5. **Create the client:** *APIs & Services* → *Credentials* → **Create credentials → OAuth client ID**.
    - Application type: **Desktop app**. Name: `Fission Desktop`. Create.
    - Copy the **Client ID** (`…apps.googleusercontent.com`) and **Client secret**.
-6. In Fission: **Settings → Account** → paste both → **Connect Gmail**. Your browser opens Google's consent page; approve access. You'll see a "Connected" page, and your inbox syncs in.
+6. In Snail Mail: **Settings → Account** → paste both → **Connect Gmail**. Your browser opens Google's consent page; approve access. You'll see a "Connected" page, and your inbox syncs in.
 
 Notes:
 - Requested scopes: `gmail.modify` (read, send, archive, label — no permanent delete, no account settings), `openid email profile` (your name + photo in the header), and `calendar.readonly` (the calendar side panel). The scope only helps if the **Google Calendar API** is enabled (step 3) — the two are separate.
@@ -59,9 +59,9 @@ Settings → **Account** → *Add a Gmail account*. The same OAuth client serves
 Microsoft Graph support is scaffolded. When it lands you'll need a (free) Azure **app registration** instead of a Google OAuth client:
 
 1. [portal.azure.com](https://portal.azure.com) → *Microsoft Entra ID* → *App registrations* → **New registration**.
-2. Supported account types: *Personal Microsoft accounts and org accounts*. Redirect URI: leave blank (Fission uses the loopback + PKCE public-client flow — no secret needed).
+2. Supported account types: *Personal Microsoft accounts and org accounts*. Redirect URI: leave blank (Snail Mail uses the loopback + PKCE public-client flow — no secret needed).
 3. API permissions: *Microsoft Graph → Delegated* → `Mail.ReadWrite`, `Mail.Send`, `offline_access`.
-4. Copy the **Application (client) ID** into Fission when the Outlook option activates.
+4. Copy the **Application (client) ID** into Snail Mail when the Outlook option activates.
 
 ## 5. Add an AI key
 

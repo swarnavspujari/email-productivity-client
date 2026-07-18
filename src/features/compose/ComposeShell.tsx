@@ -73,7 +73,7 @@ function DriveUploadPrompt({ names }: { names: string[] }) {
           ))}
         </div>
         <p className="mt-2 text-[12px] text-ink-3">
-          Files over the 25 MB email limit upload to your "Fission Mail
+          Files over the 25 MB email limit upload to your "Snail Mail
           Attachments" Drive folder and go out as a link, like Gmail. You'll
           choose who the links are shared with when you send.
         </p>

@@ -1,4 +1,4 @@
-//! Minimal Gmail REST client: exactly the calls Fission needs, nothing more.
+//! Minimal Gmail REST client: exactly the calls Snail Mail needs, nothing more.
 use crate::mail::oauth;
 use crate::secrets;
 use crate::types::*;

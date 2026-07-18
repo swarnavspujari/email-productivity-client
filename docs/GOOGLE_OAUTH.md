@@ -1,6 +1,6 @@
 # Google OAuth: what your testers will see, and what verification takes
 
-Fission uses one Google Cloud OAuth client (project `fission-mail`, Desktop-app
+Snail Mail uses one Google Cloud OAuth client (project `fission-mail`, Desktop-app
 type). Since v0.15 it requests one fixed scope block covering Gmail, Calendar
 (full), Drive, Contacts, and send-as settings — users consent exactly once.
 This page covers the consent-screen states, exactly what beta testers
@@ -45,7 +45,7 @@ does *not* require verification up front.
 ## What a tester experiences (send them this, verbatim)
 
 > When you click **Connect Gmail**, your browser opens a Google sign-in page.
-> Because Fission is a small beta, Google shows a warning screen:
+> Because Snail Mail is a small beta, Google shows a warning screen:
 >
 > **"Google hasn't verified this app"**
 >
@@ -54,7 +54,7 @@ does *not* require verification up front.
 >    own computer; nothing leaves your machine.
 > 3. Check the box granting access to Gmail and click **Continue**.
 >
-> You'll land back in Fission with your inbox syncing.
+> You'll land back in Snail Mail with your inbox syncing.
 
 Notes:
 - The unverified-app screen appears for **every new user**, once.
@@ -83,14 +83,14 @@ verified requires, in order:
 
 Cheaper alternatives if the cap ever bites before verification:
 - Switch to `gmail.readonly` + `gmail.send`? **No** — both are also
-  restricted; archiving/labeling (the core of Fission triage) needs modify
+  restricted; archiving/labeling (the core of Snail Mail triage) needs modify
   anyway. There is no non-restricted scope that can do this job.
-- Have power users create their **own** OAuth client (Fission already accepts
+- Have power users create their **own** OAuth client (Snail Mail already accepts
   pasted client credentials in Settings → Account). Each personal client has
   its own 100-user pool of one. Nerd-friendly escape hatch, not a
   mainstream one; documented in docs/SETUP.md.
 
-## Scopes Fission requests
+## Scopes Snail Mail requests
 
 | Scope | Why | Tier |
 |---|---|---|
