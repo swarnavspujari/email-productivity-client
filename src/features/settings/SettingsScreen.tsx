@@ -1035,7 +1035,7 @@ function AppearanceTab() {
 
       <Section
         title="Notifications"
-        hint="New-mail notifications appear only while the Fission window is in the background."
+        hint="New-mail notifications appear only while the Snail Mail window is in the background."
       >
         <label className="flex cursor-pointer items-center gap-3">
           <input

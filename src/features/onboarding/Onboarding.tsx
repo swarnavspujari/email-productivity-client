@@ -3,6 +3,19 @@ import { backend, isTauri } from "@/lib/ipc";
 import { useMail } from "@/stores/mail";
 import { useSettings } from "@/stores/settings";
 
+function BrandMark() {
+  const theme = useSettings((s) => s.settings.theme);
+  return (
+    <img
+      src={theme === "light" ? "/snail-mail-icon.svg" : "/snail-mail-icon-on-dark.svg"}
+      alt=""
+      aria-hidden
+      className="h-9 w-auto"
+      draggable={false}
+    />
+  );
+}
+
 const STEPS = ["welcome", "ai", "theme", "tour"] as const;
 
 const KEYS: Array<[string, string]> = [
@@ -78,9 +91,9 @@ export function Onboarding() {
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-base">
       <div className="zb-pop-in w-[560px] max-w-[92vw]">
         <div className="mb-8 flex items-center justify-center gap-2.5">
-          <span className="inline-block h-6 w-6 rotate-45 rounded-[6px] bg-accent" />
+          <BrandMark />
           <span className="text-[22px] font-semibold tracking-tight text-ink">
-            Fission Mail
+            Snail Mail
           </span>
         </div>
 
@@ -112,7 +125,7 @@ export function Onboarding() {
             </div>
             {isTauri && (
               <p className="mt-4 text-[12px] leading-relaxed text-ink-3">
-                Your browser will ask for Google consent. Because Fission is a
+                Your browser will ask for Google consent. Because Snail Mail is a
                 small beta, Google shows “unverified app” — click{" "}
                 <b>Advanced</b>, then <b>Continue</b> to the app. Mail never
                 leaves your computer.
@@ -204,7 +217,7 @@ export function Onboarding() {
               any command by name.
             </p>
             <button className={`${primaryBtn} mt-6`} onClick={finish}>
-              Start using Fission
+              Start using Snail Mail
             </button>
           </div>
         )}

@@ -3,6 +3,7 @@
 // ←/→ day-stepping via calendar.prevDay/nextDay. Click an event for
 // details/RSVP; click or drag an empty slot to create one.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { HoverHint } from "@/components/HoverHint";
 import { DAY_MS, startOfToday, useCalendar } from "@/stores/calendar";
 import { rsvpClasses } from "./CalendarPanel";
 import type { CalendarEvent } from "@/lib/types";
@@ -140,36 +141,44 @@ export function CalendarWeek() {
         <span className="text-[20px] font-semibold tracking-tight text-ink">
           {monthTitle}
         </span>
-        <button
-          className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
-          onClick={() => useCalendar.getState().shiftDay(-7)}
-          title="Previous week"
-        >
-          ‹
-        </button>
-        <button
-          className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
-          onClick={() => useCalendar.getState().shiftDay(7)}
-          title="Next week"
-        >
-          ›
-        </button>
-        <button
-          className="rounded-md border border-line-strong px-2.5 py-0.5 text-[12px] text-ink-2 hover:bg-hover hover:text-ink"
-          onClick={() => useCalendar.getState().goToday()}
-        >
-          Today
-        </button>
-        <button
-          className="rounded-md bg-accent px-2.5 py-0.5 text-[12px] font-medium text-on-accent hover:opacity-90"
-          onClick={() => {
-            const start = focusedDay + 9 * 3600_000;
-            useCalendar.getState().openCreate(start, start + 3600_000);
-          }}
-          title="New event (B)"
-        >
-          New event
-        </button>
+        <HoverHint label="Previous week" placement="bottom">
+          <button
+            className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
+            onClick={() => useCalendar.getState().shiftDay(-7)}
+            aria-label="Previous week"
+          >
+            ‹
+          </button>
+        </HoverHint>
+        <HoverHint label="Next week" placement="bottom">
+          <button
+            className="rounded-md border border-line px-2 py-0.5 text-ink-3 hover:bg-hover hover:text-ink"
+            onClick={() => useCalendar.getState().shiftDay(7)}
+            aria-label="Next week"
+          >
+            ›
+          </button>
+        </HoverHint>
+        <HoverHint label="Today" command="calendar.today" placement="bottom">
+          <button
+            className="rounded-md border border-line-strong px-2.5 py-0.5 text-[12px] text-ink-2 hover:bg-hover hover:text-ink"
+            onClick={() => useCalendar.getState().goToday()}
+          >
+            Today
+          </button>
+        </HoverHint>
+        <HoverHint label="New event" command="calendar.newEvent" placement="bottom">
+          <button
+            className="rounded-md bg-accent px-2.5 py-0.5 text-[12px] font-medium text-on-accent hover:opacity-90"
+            onClick={() => {
+              const start = focusedDay + 9 * 3600_000;
+              useCalendar.getState().openCreate(start, start + 3600_000);
+            }}
+            aria-label="New event"
+          >
+            New event
+          </button>
+        </HoverHint>
         {loading && (
           <span className="zb-spin inline-block h-3 w-3 rounded-full border-2 border-line-strong border-t-accent" />
         )}

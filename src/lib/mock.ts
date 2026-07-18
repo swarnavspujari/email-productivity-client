@@ -828,7 +828,7 @@ export class MockBackend implements Backend {
       f("dmock-pitch", "Pitch portfolio review.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", 28_442_133, 9),
       f("dmock-headshot", "Speaker headshot.png", "image/png", 2_133_910, 12),
       f("dmock-dataroom", "Data room export.zip", "application/zip", 402_133_004, 20),
-      f("dmock-onepager", "Fission one-pager.pdf", "application/pdf", 688_112, 30),
+      f("dmock-onepager", "Snail Mail one-pager.pdf", "application/pdf", 688_112, 30),
     ];
   }
 
@@ -1431,7 +1431,7 @@ export class MockBackend implements Backend {
     return {
       url: "/inbox-zero/quiet-lake.svg",
       blurHash: null,
-      authorName: "Fission demo art",
+      authorName: "Snail Mail demo art",
       authorLink: null,
       photoLink: null,
       downloadLocation: null,

@@ -8,6 +8,7 @@ import { useProfiles, useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { Avatar } from "@/components/Avatar";
 import { IconButton } from "@/components/Button";
+import { HoverHint } from "@/components/HoverHint";
 import { NavRail } from "@/components/NavRail";
 import { UndoToast } from "@/components/UndoToast";
 import { UndoSendBar } from "@/components/UndoSendBar";
@@ -173,7 +174,7 @@ export default function App() {
   if (!loaded) {
     return (
       <div className="flex h-full items-center justify-center text-ink-3">
-        Loading Fission…
+        Loading Snail Mail…
       </div>
     );
   }
@@ -188,6 +189,16 @@ export default function App() {
 
   return (
     <div className="relative flex h-full overflow-hidden bg-base">
+      {/* Signature wash — the faint cerulean glow anchored to the bottom edge
+          (design token --wash-bottom). A ~300px bottom strip, not full height:
+          the light token's stops (transparent at 130px, cerulean at 40%) are
+          only consistent on a short layer — full-height renders a hard band.
+          Present, never loud; overlays sit higher in the stack. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[300px]"
+        style={{ background: "var(--wash-bottom)" }}
+      />
       <NavRail
         view={screen === "calendar" ? "calendar" : "mail"}
         onMail={() => {
@@ -209,7 +220,7 @@ export default function App() {
           ☰
         </button>
         <span className="whitespace-nowrap text-[15px] font-semibold tracking-tight text-ink">
-          Fission Mail
+          Snail Mail
         </span>
         <div className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-1.5 pr-2 hover:border-line-strong">
           <ActiveAvatar email={accounts.active} />
@@ -263,23 +274,32 @@ export default function App() {
             Update failed — Retry
           </button>
         ) : null}
-        <IconButton
-          label="Compose (C)"
-          onClick={() => runCommandById("compose")}
-        >
-          ✎
-        </IconButton>
-        <IconButton label="Search (/)" onClick={() => runCommandById("search")}>
-          ⌕
-        </IconButton>
+        <HoverHint label="Compose" command="compose" placement="bottom">
+          <IconButton
+            label="Compose"
+            noTitle
+            onClick={() => runCommandById("compose")}
+          >
+            ✎
+          </IconButton>
+        </HoverHint>
+        <HoverHint label="Search" command="search" placement="bottom">
+          <IconButton
+            label="Search"
+            noTitle
+            onClick={() => runCommandById("search")}
+          >
+            ⌕
+          </IconButton>
+        </HoverHint>
         <IconButton
           label="Settings (Ctrl+,)"
           onClick={() => useUi.getState().setScreen("settings")}
         >
           ⚙
         </IconButton>
-        {/* Theme toggle is intentionally NOT a button — it lives in the Fission
-            Command palette (type "theme" or "dark mode"), Superhuman-style. */}
+        {/* Theme toggle is intentionally NOT a button — it lives in Shell
+            Command (type "theme" or "dark mode"), Superhuman-style. */}
       </header>
 
       {/* The shortcuts panel docks OUTSIDE <main> so it stays put across
@@ -354,7 +374,7 @@ export default function App() {
               </span>
               <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                 Hit <span className="kbd">Ctrl</span>
-                <span className="kbd">K</span> for Fission Command
+                <span className="kbd">K</span> for Shell Command
               </span>
             </div>
           )}

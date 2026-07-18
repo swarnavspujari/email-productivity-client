@@ -42,17 +42,21 @@ export function IconButton({
   onClick,
   bordered,
   active,
+  noTitle,
 }: {
   children: React.ReactNode;
   label: string;
   onClick?: (e: React.MouseEvent) => void;
   bordered?: boolean;
   active?: boolean;
+  /** Omit the native title — set when a HoverHint wraps this button, so the
+   *  browser tooltip doesn't double up with the hint card. */
+  noTitle?: boolean;
 }) {
   return (
     <button
       aria-label={label}
-      title={label}
+      title={noTitle ? undefined : label}
       onClick={onClick}
       className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-[15px] ${
         bordered ? "border-line" : "border-transparent"

@@ -1,0 +1,53 @@
+/* ============================================================
+   Snail Mail — Typography tokens
+   Primary faces are Google webfonts chosen as the closest shippable
+   match to the product's Windows system fonts: "Source Sans 3" for UI
+   (a humanist sans close to Segoe UI) and "JetBrains Mono" for mono
+   (close to Cascadia Code). The original Segoe/Cascadia families remain
+   in the fallback stack, so a machine that has them still uses them.
+   The @font-face rules load via the Google @import at the top of
+   styles.css. See readme.md "Fonts".
+   ============================================================ */
+:root {
+  /* Families — Google webfont primary, original OS font as fallback. */
+  --font-sans: "Source Sans 3", "Segoe UI Variable Text", "Segoe UI",
+    system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono",
+    "Consolas", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Display — MARKETING / brand headings ONLY (hero lockups, campaign
+     titles, the "it only sounds slow" voice). A square, forward-slanted
+     technical italic echoing the Snail Mail wordmark. NEVER in the app UI
+     — dense product surfaces stay on --font-sans. */
+  --font-display: "Chakra Petch", var(--font-sans);
+
+  /* Base — the app runs at 14px. Everything scales off this. */
+  --text-root: 14px;
+
+  /* Size ramp (px) — pulled from real usage across the app.
+     11 caption · 12 meta · 13 control · 13.5 body · 14 base ·
+     15 title · 22 screen-title · 26 hero */
+  --fs-caption: 11px;
+  --fs-meta: 12px;
+  --fs-control: 13px;
+  --fs-body: 13.5px;
+  --fs-base: 14px;
+  --fs-title: 15px;
+  --fs-h2: 22px;
+  --fs-h1: 26px;
+
+  /* Weights — the UI uses only these three. */
+  --fw-regular: 400; /* @kind other */
+  --fw-medium: 500; /* @kind other */
+  --fw-semibold: 600; /* @kind other */
+
+  /* Line heights */
+  --lh-tight: 1.2; /* @kind other */
+  --lh-snug: 1.35; /* @kind other */
+  --lh-body: 1.55; /* @kind other */
+  --lh-relaxed: 1.65; /* @kind other */
+
+  /* Letter-spacing — titles tighten, overlines widen. */
+  --ls-tight: -0.01em; /* @kind other */
+  --ls-overline: 0.06em; /* @kind other */
+}

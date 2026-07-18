@@ -7,6 +7,7 @@ import { CalendarPanel } from "@/features/calendar/CalendarPanel";
 import { FolderSidebar } from "@/components/FolderSidebar";
 import { useUi } from "@/stores/ui";
 import { IconButton } from "@/components/Button";
+import { HoverHint } from "@/components/HoverHint";
 import { Label } from "@/components/Label";
 import { RestState } from "@/components/RestState";
 import type { Thread } from "@/lib/types";
@@ -30,7 +31,7 @@ function timeLabel(ms: number): string {
 }
 
 /** Toggle for the day panel; the badge counts what's still ahead today. */
-function CalendarToggle() {
+function CalendarToggle({ overlay }: { overlay?: boolean }) {
   const open = useSettings((s) => s.settings.calendarOpen);
   const [upcoming, setUpcoming] = useState<number | null>(null);
 
@@ -57,9 +58,11 @@ function CalendarToggle() {
         useUi.getState().setFocusRegion(next ? "calendar" : "mail");
       }}
       className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
-        open
-          ? "border-accent/50 bg-accent-dim text-ink"
-          : "border-line text-ink-3 hover:border-line-strong hover:text-ink-2"
+        overlay
+          ? "border-white/30 text-white/85 hover:border-white/50 hover:text-white"
+          : open
+            ? "border-accent/50 bg-accent-dim text-ink"
+            : "border-line text-ink-3 hover:border-line-strong hover:text-ink-2"
       }`}
       title="Toggle the calendar panel"
     >
@@ -77,7 +80,7 @@ function CalendarToggle() {
   );
 }
 
-function SplitTabs() {
+function SplitTabs({ overlay }: { overlay?: boolean }) {
   const inbox = useMail((s) => s.inbox);
   const activeSplitId = useMail((s) => s.activeSplitId);
   const splits = useSettings((s) => s.settings.splits);
@@ -86,8 +89,12 @@ function SplitTabs() {
     (sp) => !sp.hideWhenEmpty || splitThreads(inbox, sp.id).length > 0
   );
 
+  // Over the inbox-zero photo the tabs stay put but go translucent-white with
+  // a soft shadow (the chrome sits ON the photo, per the inbox-zero pattern).
+  const shadow = overlay ? { textShadow: "0 1px 3px rgba(0,0,0,0.4)" } : undefined;
+
   return (
-    <div className="flex h-[52px] shrink-0 items-center gap-5 px-6">
+    <div className="relative z-10 flex h-[52px] shrink-0 items-center gap-5 px-6">
       {shown.map((sp) => {
         const count = splitThreads(inbox, sp.id).length;
         const active = sp.id === activeSplitId;
@@ -95,15 +102,26 @@ function SplitTabs() {
           <button
             key={sp.id}
             onClick={() => useMail.getState().setActiveSplit(sp.id)}
+            style={shadow}
             className={`flex items-center gap-2 py-1 text-[17px] tracking-tight transition-colors ${
-              active ? "font-semibold text-ink" : "text-ink-3 hover:text-ink-2"
+              overlay
+                ? active
+                  ? "font-semibold text-white"
+                  : "text-white/60 hover:text-white/85"
+                : active
+                  ? "font-semibold text-ink"
+                  : "text-ink-3 hover:text-ink-2"
             }`}
           >
             {sp.name}
             {/* total conversations, not unread — a split reads like a to-do list */}
             <span
               className={`text-[12.5px] font-medium ${
-                active ? "text-accent-strong" : "text-ink-3"
+                overlay
+                  ? "text-white/75"
+                  : active
+                    ? "text-accent-strong"
+                    : "text-ink-3"
               }`}
             >
               {count}
@@ -112,10 +130,19 @@ function SplitTabs() {
         );
       })}
       <div className="flex-1" />
-      <span className="whitespace-nowrap text-[11px] text-ink-3">
-        <span className="kbd">Tab</span> to switch
+      <span
+        style={shadow}
+        className={`whitespace-nowrap text-[11px] ${overlay ? "text-white/75" : "text-ink-3"}`}
+      >
+        {overlay ? (
+          <>Tab to switch</>
+        ) : (
+          <>
+            <span className="kbd">Tab</span> to switch
+          </>
+        )}
       </span>
-      <CalendarToggle />
+      <CalendarToggle overlay={overlay} />
     </div>
   );
 }
@@ -200,24 +227,30 @@ function Row({
           className="flex shrink-0 gap-0.5"
           onClick={(e) => e.stopPropagation()}
         >
-          <IconButton
-            label="Mark Done (E)"
-            onClick={() => {
-              useMail.getState().select(index);
-              runCommandById("thread.done");
-            }}
-          >
-            ✓
-          </IconButton>
-          <IconButton
-            label="Remind me (H)"
-            onClick={() => {
-              useMail.getState().select(index);
-              runCommandById("thread.snooze");
-            }}
-          >
-            🕑
-          </IconButton>
+          <HoverHint label="Mark Done" command="thread.done" placement="bottom">
+            <IconButton
+              label="Mark Done"
+              noTitle
+              onClick={() => {
+                useMail.getState().select(index);
+                runCommandById("thread.done");
+              }}
+            >
+              ✓
+            </IconButton>
+          </HoverHint>
+          <HoverHint label="Remind Me" command="thread.snooze" placement="bottom">
+            <IconButton
+              label="Remind Me"
+              noTitle
+              onClick={() => {
+                useMail.getState().select(index);
+                runCommandById("thread.snooze");
+              }}
+            >
+              🕑
+            </IconButton>
+          </HoverHint>
         </div>
       ) : (
         <>
@@ -324,15 +357,28 @@ export function MailScreen() {
                 ? listView.slice(6)
                 : listView;
 
+  // Inbox zero: the daily photo fills the whole list column edge-to-edge and
+  // the split tabs sit translucently ON it (design "Inbox Zero" pattern).
+  const zero = loaded && listView === "inbox" && threads.length === 0;
+
   return (
     <div className="flex h-full">
       {sidebarOpen && <FolderSidebar />}
       <div
-        className="flex min-w-0 flex-1 flex-col"
+        className="relative flex min-w-0 flex-1 flex-col"
         onMouseDown={() => useUi.getState().setFocusRegion("mail")}
       >
+        {zero && (
+          <>
+            <div className="absolute inset-0">
+              <RestState />
+            </div>
+            {/* top scrim keeps the translucent split tabs legible on any photo */}
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/30 to-transparent" />
+          </>
+        )}
         {listView === "inbox" ? (
-          <SplitTabs />
+          <SplitTabs overlay={zero} />
         ) : (
           <div className="flex items-center border-b border-line bg-base px-4 py-2 text-[13px] font-medium text-ink">
             {title}
@@ -377,15 +423,12 @@ export function MailScreen() {
               )}
             </div>
           )}
-          {loaded && threads.length === 0 && (
-            listView === "inbox" ? (
-              <RestState />
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
-                <div className="text-4xl">◎</div>
-                <div className="text-[14px]">Nothing here.</div>
-              </div>
-            )
+          {/* inbox zero renders as the full-column photo above, not in-list */}
+          {loaded && threads.length === 0 && listView !== "inbox" && (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
+              <div className="text-4xl">◎</div>
+              <div className="text-[14px]">Nothing here.</div>
+            </div>
           )}
         </div>
       </div>

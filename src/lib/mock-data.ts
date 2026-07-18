@@ -277,7 +277,7 @@ const seeds: Seed[] = [
   {
     thread: {
       id: "t-github",
-      subject: "[fission-mail] Your workflow run failed: CI on main",
+      subject: "[snail-mail] Your workflow run failed: CI on main",
       unread: false,
       starred: false,
       labels: [],
@@ -296,7 +296,7 @@ const seeds: Seed[] = [
         // Wide content: a long single-line <pre> and a fixed-width nowrap
         // table must scroll inside their own box, never widen the pane.
         bodyHtml: `<div style="font-family:-apple-system,'Segoe UI',sans-serif;max-width:640px">
-  <p style="margin:0 0 12px"><b>[fission-mail]</b> Run <a href="https://example.com/runs/8841">#8841</a> failed on <code>main</code> after 2m14s.</p>
+  <p style="margin:0 0 12px"><b>[snail-mail]</b> Run <a href="https://example.com/runs/8841">#8841</a> failed on <code>main</code> after 2m14s.</p>
   <pre style="background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;font-size:12px">windows-build: error LNK2019: unresolved external symbol __imp_OrtGetApiBase referenced in function ort_api_init (fastembed-5.17.2\\ort\\sys\\lib.rs:114) [C:\\actions-runner\\_work\\email-productivity-client\\src-tauri\\target\\release\\deps\\fission_mail.exe]</pre>
   <table width="720" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12.5px;border:1px solid #d0d7de">
     <tr style="background:#f6f8fa"><td nowrap><b>Job</b></td><td nowrap><b>Commit</b></td><td nowrap><b>Message</b></td><td nowrap><b>Duration</b></td></tr>

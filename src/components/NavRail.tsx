@@ -1,5 +1,6 @@
 // Far-left icon rail (design system navigation/NavRail): brand mark on top,
 // then one monochrome glyph per top-level surface.
+import { useSettings } from "@/stores/settings";
 
 function RailButton({
   children,
@@ -37,12 +38,15 @@ export function NavRail({
   onMail: () => void;
   onCalendar: () => void;
 }) {
+  const theme = useSettings((s) => s.settings.theme);
   return (
     <nav className="flex w-14 shrink-0 flex-col items-center gap-2 border-r border-line bg-base py-3">
+      {/* The rocket-snail mark — ink flips with the theme (navy on light,
+          near-white on dark); the cyan shell + gold flame are brand constants. */}
       <img
-        src="/fission-mark.png"
-        alt="Fission Mail"
-        className="mb-2 h-7 w-7 rounded-lg"
+        src={theme === "light" ? "/snail-mail-icon.svg" : "/snail-mail-icon-on-dark.svg"}
+        alt="Snail Mail"
+        className="mb-2 h-8 w-8"
         draggable={false}
       />
       <RailButton label="Mail" active={view === "mail"} onClick={onMail}>

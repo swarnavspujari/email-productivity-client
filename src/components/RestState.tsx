@@ -9,7 +9,7 @@ import { useSettings } from "@/stores/settings";
 import type { DailyPhoto } from "@/lib/types";
 
 const UNSPLASH_HOME =
-  "https://unsplash.com/?utm_source=fission_mail&utm_medium=referral";
+  "https://unsplash.com/?utm_source=snail_mail&utm_medium=referral";
 
 function BlurCanvas({ hash }: { hash: string }) {
   const ref = useRef<HTMLCanvasElement>(null);

@@ -78,14 +78,14 @@ export function CommandPalette() {
       className="zb-fade-in absolute inset-0 z-40 flex items-start justify-center bg-black/50 pt-[12vh]"
       onClick={() => useUi.getState().closePalette()}
     >
-      {/* Fission Command is dark on any theme — --palette-* tokens don't
+      {/* Shell Command is dark on any theme — --palette-* tokens don't
           flip with the light theme (design system rule). */}
       <div
         className="zb-pop-in w-[640px] max-w-[92vw] overflow-hidden rounded-xl border border-[var(--palette-line)] bg-[var(--palette-bg)] shadow-2xl [color-scheme:dark]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 px-4 pb-2 pt-3.5 text-[13px] text-[var(--palette-text-faint)]">
-          <span aria-hidden>⬡</span> Fission Command
+          <span aria-hidden>⬡</span> Shell Command
         </div>
         <input
           ref={inputRef}

@@ -1,6 +1,6 @@
 // The complete Superhuman shortcut sheet (their categories, their labels,
 // their keys — transcribed from the current Windows build) with each entry
-// mapped onto Fission Mail:
+// mapped onto Snail Mail:
 //   ready   — wired to a command (the panel shows the LIVE, remappable
 //             binding from Settings → Shortcuts) or native to the editor
 //   partial — the capability exists but only via UI, or on a different key
@@ -33,7 +33,7 @@ export const SHORTCUTS_CATALOG: CatalogSection[] = [
   {
     title: "Actions",
     items: [
-      { label: "Superhuman Command", keys: "mod+k", commands: ["palette.open"], status: "ready", note: "Fission Command" },
+      { label: "Superhuman Command", keys: "mod+k", commands: ["palette.open"], status: "ready", note: "Shell Command" },
       { label: "Search", keys: "/", commands: ["search"], status: "ready" },
       { label: "Undo", keys: "z", commands: ["undo"], status: "ready" },
       { label: "Ask AI", keys: "?", commands: ["ai.ask"], status: "ready", note: "Ask AI about the open thread" },

@@ -58,7 +58,7 @@ function Row({
 
 /** Right-hand shortcuts reference, Superhuman-style: the full sheet in their
  *  categories, live-updated from Settings → Shortcuts remaps. Dimmed rows are
- *  Superhuman capabilities on the Fission roadmap (see docs/SHORTCUTS.md).
+ *  Superhuman capabilities on the Snail Mail roadmap (see docs/SHORTCUTS.md).
  *  Opens from the palette ("Keyboard Shortcuts"); Esc or × closes. */
 export function ShortcutsPanel() {
   const shortcuts = useSettings((s) => s.settings.shortcuts);

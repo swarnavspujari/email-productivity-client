@@ -1,0 +1,247 @@
+/* ============================================================
+   Snail Mail — Color tokens
+   Palette: CERULEAN — a cobalt blue pulled ~40% toward green, so blue
+   and green read as one family. Accent hue 222; neutral surfaces carry
+   a whisper of that hue (H 210) so the tint lives in the whole UI, not
+   just the accent.
+
+   Dark mode is built on Material Design 3's tonal method, NOT a navy
+   near-black. Surfaces are a soft, dark *tonal* neutral (base ≈ oklch
+   0.205 — a comfortable dark grey, never #000) and step up in an MD3
+   elevation ladder (surface → container → high → highest), each layer
+   a little lighter as if lit from above. The accent is an MD3 "primary
+   in dark" — a LIGHT, gently-desaturated cerulean (tone ~80) carrying
+   dark text — so big saturated blocks never vibrate against the dark.
+
+   Light mode is the same hue family on a cool near-white, tuned (not
+   inverted): surfaces lighten as they come nearer, the accent deepens
+   to a mid cerulean (MD3 tone ~40) to hold against dark text.
+
+   Both honor: darken distant surfaces · retune contrast per theme ·
+   no big bright blocks · no pure black/white · deepen (light) / lift
+   (dark) accents. WCAG AA throughout.
+   ============================================================ */
+:root {
+  /* ---- Surfaces — MD3 tonal elevation, lit from above. -------------
+     Furthest/darkest = base; each nearer layer lifts ~0.03 in lightness
+     with a touch more of the cerulean tint. Depth comes from STACKING
+     lighter surfaces, almost never from shadow. */
+  --bg-base: oklch(0.205 0.008 210);      /* app backdrop — MD3 surface. Soft dark, not black. */
+  --bg-surface: oklch(0.238 0.009 210);   /* primary panels — surface-container-low */
+  --bg-hover: oklch(0.268 0.011 210);     /* row / control hover — surface-container */
+  --bg-raised: oklch(0.292 0.013 210);    /* cards, message cards — surface-container-high */
+  --bg-overlay: oklch(0.324 0.015 210);   /* floating menus, dialogs — surface-container-highest */
+  --bg-selected: oklch(0.345 0.058 224);  /* selection — a cerulean-tinted container */
+
+  /* ---- Text — MD3 on-surface tones. Never pure #fff; primary is a
+     soft near-white (L 0.955) that avoids halation on the dark tonal
+     surface. Three emphasis tiers. */
+  --text-primary: oklch(0.955 0.006 210);
+  --text-secondary: oklch(0.822 0.013 210);
+  --text-muted: oklch(0.668 0.017 210);
+
+  /* ---- Interactive primary — CERULEAN. MD3 "primary in dark": a light,
+     gently-desaturated blue (tone ~80) that reads bright on the dark
+     tonal surface and carries DARK text. Buttons, links, focus, the
+     selection bar. */
+  --accent: oklch(0.802 0.122 222);
+  --accent-strong: oklch(0.862 0.108 222);   /* hover — lifts lighter */
+  --accent-dim: oklch(0.802 0.122 222 / 0.18); /* tinted washes / chip fills */
+  --on-accent: oklch(0.255 0.062 224);        /* dark cerulean text ON the accent fill */
+
+  /* ---- Highlight / attention accent — warm gold. Stars, unread
+     emphasis, special highlights — never buttons. */
+  --accent-2: oklch(0.862 0.135 84);
+  --accent-2-strong: oklch(0.905 0.132 84);
+  --accent-2-dim: oklch(0.862 0.135 84 / 0.18);
+  --on-accent-2: oklch(0.28 0.05 84);
+
+  /* ---- Brand marks — the FIXED logo colors (theme-independent). The
+     rocket-snail lockup is drawn in exactly these three; the app-icon
+     tile sits on --brand-navy. Cyan/gold match the dark accent + gold,
+     so the identity and the UI accent are one family. Do NOT theme
+     these — they are brand constants, used for the logo, the app tile,
+     and brand/marketing surfaces only. */
+  --brand-navy: #002839;   /* deep teal-navy — ink, outlines, wordmark, app-tile ground */
+  --brand-cyan: #52d0f6;   /* the shell + fast-lines cyan (= dark --accent) */
+  --brand-gold: #fbca60;   /* the booster-flame gold (= dark --accent-2) */
+  --brand-paper: #ffffff;  /* the snail's body reads as the page behind it */
+
+  /* ---- Semantic status — lifted for the dark tonal surface. Success
+     is the green end of the cerulean family. */
+  --success: oklch(0.82 0.14 158);
+  --warning: oklch(0.862 0.135 84);
+  --danger: oklch(0.73 0.15 26);
+
+  /* ---- Hairlines — white-alpha so they read on any tinted dark. ---- */
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --focus-ring: 0 0 0 2px oklch(0.802 0.122 222 / 0.72);
+
+  /* ---- Hover-hint tooltip — the theme-aware INVERSE card that surfaces a
+     control's keyboard shortcut on hover (components/core/HoverHint). The rule:
+     the tip is the opposite tone to the app so it always pops. DARK theme -> a
+     LIGHT card, dark label text, muted cool-gray keycaps with light text
+     (matches the Superhuman hover reference). ---- */
+  --tip-bg: oklch(0.968 0.004 210);
+  --tip-fg: oklch(0.34 0.014 224);
+  --tip-fg-dim: oklch(0.52 0.016 224);
+  --tip-key-bg: oklch(0.56 0.021 245);
+  --tip-key-fg: oklch(0.98 0.004 210);
+  --tip-border: transparent;
+  --tip-shadow: 0 10px 30px oklch(0.15 0.02 224 / 0.5);
+
+  /* ---- Auto-label / tag palette — dim fill + legible same-hue text.
+     Categorical hues (names are stable keys). pitch=blue, CRM=green,
+     news=amber, marketing=violet. All tuned to one lightness band so
+     the set reads as a family. (dark) */
+  --tag-blue-bg: oklch(0.802 0.122 222 / 0.22);
+  --tag-blue-fg: oklch(0.86 0.10 222);
+  --tag-green-bg: oklch(0.82 0.14 158 / 0.20);
+  --tag-green-fg: oklch(0.85 0.10 158);
+  --tag-amber-bg: oklch(0.862 0.135 84 / 0.20);
+  --tag-amber-fg: oklch(0.87 0.10 84);
+  --tag-violet-bg: oklch(0.72 0.15 292 / 0.22);
+  --tag-violet-fg: oklch(0.83 0.11 292);
+  --tag-pink-bg: oklch(0.76 0.16 352 / 0.20);
+  --tag-pink-fg: oklch(0.84 0.12 352);
+  --tag-gray-bg: oklch(0.72 0.015 210 / 0.20);
+  --tag-gray-fg: oklch(0.80 0.012 210);
+
+  /* ---- Sender status dots — unread markers cycle through these. ---- */
+  --dot-blue: oklch(0.80 0.13 222);
+  --dot-pink: oklch(0.76 0.16 352);
+  --dot-amber: oklch(0.865 0.135 84);
+  --dot-violet: oklch(0.74 0.15 292);
+
+  /* ---- Calendar palette — one hue per calendar in the account list. An
+     event renders as a MUTED tinted block (its hue mixed into the surface,
+     never a big saturated fill — the dark-theme rule) + a saturated left
+     bar in the same hue; the calendar's checkbox in the side panel fills
+     with it. Tuned to the tag/dot lightness band so blue↔green↔violet read
+     as one cerulean-adjacent family. Consume as color-mix bases, e.g.
+     `color-mix(in oklab, var(--cal-green) 22%, var(--bg-surface))`. */
+  --cal-cerulean: oklch(0.802 0.122 222);
+  --cal-green: oklch(0.80 0.13 158);
+  --cal-violet: oklch(0.74 0.15 292);
+  --cal-amber: oklch(0.862 0.135 84);
+  --cal-rose: oklch(0.76 0.16 352);
+  --cal-teal: oklch(0.80 0.09 200);
+  --cal-gray: oklch(0.70 0.016 210);
+
+  /* ---- Shell Command — the palette is DARK on any theme (design
+     rule). A deep cerulean-tinted dark, one focused surface. Not
+     overridden by the light theme below. */
+  --palette-bg: oklch(0.222 0.042 233);
+  --palette-line: rgba(255, 255, 255, 0.08);
+  --palette-hover: rgba(255, 255, 255, 0.07);
+  --palette-text: oklch(0.955 0.006 210);
+  --palette-text-dim: oklch(0.80 0.012 210);
+  --palette-text-faint: oklch(0.63 0.016 210);
+
+  /* ---- Signature "wash": Snail Mail's calm answer to Superhuman's peach
+     glow. Tells the cerulean story — a green whisper at the very bottom
+     edge blending up into cerulean, then fading out. */
+  --wash-bottom: linear-gradient(to top, oklch(0.82 0.14 158 / 0.05), oklch(0.802 0.122 222 / 0.10) 34%, transparent 62%); /* @kind other */
+
+  color-scheme: dark;
+}
+
+/* Light theme — cool near-white, same cerulean family. Tuned (not
+   inverted): surfaces LIGHTEN as they come nearer (base → raised white),
+   the accent DEEPENS to a mid cerulean to hold against dark text.
+   WCAG AA throughout. */
+html[data-theme="light"] {
+  --bg-base: oklch(0.975 0.004 210);       /* cool off-white, furthest */
+  --bg-surface: oklch(0.962 0.006 210);
+  --bg-raised: oklch(1 0 0);               /* pure white cards (nearest) */
+  --bg-overlay: oklch(1 0 0);
+  --bg-hover: oklch(0.945 0.008 210);
+  --bg-selected: oklch(0.912 0.046 224);   /* cerulean-tinted selection keeps the brand present */
+
+  --text-primary: oklch(0.30 0.026 222);
+  --text-secondary: oklch(0.445 0.03 222);
+  --text-muted: oklch(0.515 0.028 222);
+
+  --accent: oklch(0.522 0.142 222);        /* mid cerulean — MD3 tone ~40 */
+  --accent-strong: oklch(0.458 0.148 222); /* hover deepens */
+  --accent-dim: oklch(0.522 0.142 222 / 0.12);
+  --on-accent: oklch(0.99 0.005 222);      /* near-white text on accent */
+
+  --accent-2: oklch(0.60 0.128 76);        /* gold deepens on white to stay legible */
+  --accent-2-strong: oklch(0.53 0.115 76);
+  --accent-2-dim: oklch(0.60 0.128 76 / 0.14);
+  --on-accent-2: oklch(0.99 0.004 76);
+
+  --success: oklch(0.50 0.13 158);
+  --warning: oklch(0.56 0.115 76);
+  --danger: oklch(0.52 0.19 27);
+
+  --border: oklch(0.30 0.03 222 / 0.12);
+  --border-strong: oklch(0.30 0.03 222 / 0.20);
+
+  --focus-ring: 0 0 0 2px oklch(0.522 0.142 222 / 0.6);
+
+  /* Hover-hint tooltip (see :root) — LIGHT theme -> a DARK card: near-white
+     label text + keycaps a step lighter than the card. Inverse of the app. */
+  --tip-bg: oklch(0.305 0.024 233);
+  --tip-fg: oklch(0.955 0.006 210);
+  --tip-fg-dim: oklch(0.78 0.012 210);
+  --tip-key-bg: oklch(0.44 0.03 233);
+  --tip-key-fg: oklch(0.97 0.005 210);
+  --tip-border: rgba(255, 255, 255, 0.08);
+  --tip-shadow: 0 12px 32px oklch(0.30 0.03 233 / 0.28);
+
+  /* Auto-label / tag palette (light) — deeper text on soft tints. */
+  --tag-blue-bg: oklch(0.522 0.142 222 / 0.12);
+  --tag-blue-fg: oklch(0.46 0.14 222);
+  --tag-green-bg: oklch(0.50 0.13 158 / 0.13);
+  --tag-green-fg: oklch(0.43 0.12 158);
+  --tag-amber-bg: oklch(0.56 0.115 76 / 0.15);
+  --tag-amber-fg: oklch(0.47 0.10 76);
+  --tag-violet-bg: oklch(0.48 0.16 292 / 0.12);
+  --tag-violet-fg: oklch(0.46 0.16 292);
+  --tag-pink-bg: oklch(0.52 0.18 352 / 0.12);
+  --tag-pink-fg: oklch(0.48 0.18 352);
+  --tag-gray-bg: oklch(0.45 0.02 222 / 0.10);
+  --tag-gray-fg: oklch(0.44 0.02 222);
+
+  --dot-blue: oklch(0.522 0.15 222);
+  --dot-pink: oklch(0.52 0.18 352);
+  --dot-amber: oklch(0.60 0.14 76);
+  --dot-violet: oklch(0.50 0.16 292);
+
+  /* Calendar palette (light) — deepened to hold against the tinted-white
+     event fills and dark text. Same hues as :root. */
+  --cal-cerulean: oklch(0.522 0.142 222);
+  --cal-green: oklch(0.50 0.13 158);
+  --cal-violet: oklch(0.50 0.16 292);
+  --cal-amber: oklch(0.58 0.12 76);
+  --cal-rose: oklch(0.52 0.18 352);
+  --cal-teal: oklch(0.48 0.09 200);
+  --cal-gray: oklch(0.55 0.02 210);
+
+  /* Cool, airy wash — cerulean with a faint green hint at the bottom edge. */
+  --wash-bottom: linear-gradient(to top, oklch(0.50 0.13 158 / 0.05), oklch(0.522 0.142 222 / 0.06) 40%, transparent 130px); /* @kind other */
+
+  color-scheme: light;
+}
+
+/* ---- Semantic aliases (author against these in UI) ---- */
+:root {
+  --surface-app: var(--bg-base);
+  --surface-panel: var(--bg-surface);
+  --surface-card: var(--bg-surface);
+  --surface-raised: var(--bg-raised);
+  --surface-overlay: var(--bg-overlay);
+  --surface-hover: var(--bg-hover);
+  --surface-selected: var(--bg-selected);
+
+  --text-body: var(--text-primary);
+  --text-dim: var(--text-secondary);
+  --text-faint: var(--text-muted);
+
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+}

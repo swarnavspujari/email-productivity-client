@@ -4,8 +4,8 @@
 // hidden file <input> that backs 📎 lives here so the whole attach flow is in
 // one place. 📎 opens a two-item flyout: local files or Google Drive.
 import { useEffect, useRef, useState } from "react";
-import { formatKeyExpr } from "@/lib/keyboard";
-import { runCommandById, shortcutHint } from "@/lib/commands";
+import { runCommandById } from "@/lib/commands";
+import { HoverHint } from "@/components/HoverHint";
 import { useUi } from "@/stores/ui";
 
 /** 📎 → a small upward flyout: attach local files, or open the Drive picker. */
@@ -27,17 +27,19 @@ function AttachFlyout({ fileRef }: { fileRef: React.RefObject<HTMLInputElement> 
 
   return (
     <div ref={rootRef} className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={`rounded px-1.5 py-1 text-[13px] ${
-          open ? "text-ink" : "text-ink-3 hover:text-ink"
-        }`}
-        title="Attach…"
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        📎
-      </button>
+      <HoverHint label="Attach">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className={`rounded px-1.5 py-1 text-[13px] ${
+            open ? "text-ink" : "text-ink-3 hover:text-ink"
+          }`}
+          aria-label="Attach"
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          📎
+        </button>
+      </HoverHint>
       {open && (
         <div
           role="menu"
@@ -53,17 +55,22 @@ function AttachFlyout({ fileRef }: { fileRef: React.RefObject<HTMLInputElement> 
           >
             📎 Attach files…
           </button>
-          <button
-            role="menuitem"
-            className={item}
-            onClick={() => {
-              setOpen(false);
-              useUi.getState().openPicker("drivePicker");
-            }}
-            title={`Attach from Google Drive (${formatKeyExpr(shortcutHint("compose.attachDrive"))})`}
+          <HoverHint
+            label="Attach from Drive"
+            command="compose.attachDrive"
+            wrapClassName="flex w-full"
           >
-            ▲ Attach from Google Drive…
-          </button>
+            <button
+              role="menuitem"
+              className={item}
+              onClick={() => {
+                setOpen(false);
+                useUi.getState().openPicker("drivePicker");
+              }}
+            >
+              ▲ Attach from Google Drive…
+            </button>
+          </HoverHint>
         </div>
       )}
     </div>
@@ -85,36 +92,44 @@ export function ComposeActionBar({
 
   return (
     <div className="flex items-center gap-3 border-t border-line px-4 py-2.5">
-      <button
-        onClick={() => window.dispatchEvent(new CustomEvent("fission:send"))}
-        disabled={sending}
-        className="rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-strong disabled:opacity-50"
-      >
-        {sending ? "Sending…" : "Send"}
-      </button>
-      <button
-        onClick={() => useUi.getState().openPicker("sendLater")}
-        className="text-[12.5px] text-ink-2 hover:text-ink"
-      >
-        Send later
-      </button>
+      <HoverHint label="Send" command="compose.send">
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent("fission:send"))}
+          disabled={sending}
+          className="rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-strong disabled:opacity-50"
+        >
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </HoverHint>
+      <HoverHint label="Send later" command="compose.sendLater">
+        <button
+          onClick={() => useUi.getState().openPicker("sendLater")}
+          className="text-[12.5px] text-ink-2 hover:text-ink"
+        >
+          Send later
+        </button>
+      </HoverHint>
       <div className="flex-1" />
-      <button
-        onClick={() => useUi.getState().setAiBarOpen(!aiBarOpen)}
-        className={`rounded px-1.5 py-1 text-[13px] ${
-          aiBarOpen ? "text-accent-strong" : "text-ink-3 hover:text-ink"
-        }`}
-        title={`Write with AI (${formatKeyExpr(shortcutHint("compose.ai"))})`}
-      >
-        ✦
-      </button>
-      <button
-        onClick={() => useUi.getState().openPicker("snippet")}
-        className="rounded px-1.5 py-1 text-[13px] text-ink-3 hover:text-ink"
-        title="Insert snippet"
-      >
-        {"{ }"}
-      </button>
+      <HoverHint label="Write with AI" command="compose.ai">
+        <button
+          onClick={() => useUi.getState().setAiBarOpen(!aiBarOpen)}
+          className={`rounded px-1.5 py-1 text-[13px] ${
+            aiBarOpen ? "text-accent-strong" : "text-ink-3 hover:text-ink"
+          }`}
+          aria-label="Write with AI"
+        >
+          ✦
+        </button>
+      </HoverHint>
+      <HoverHint label="Use snippet" command="compose.snippet">
+        <button
+          onClick={() => useUi.getState().openPicker("snippet")}
+          className="rounded px-1.5 py-1 text-[13px] text-ink-3 hover:text-ink"
+          aria-label="Insert snippet"
+        >
+          {"{ }"}
+        </button>
+      </HoverHint>
       <AttachFlyout fileRef={fileRef} />
       <input
         ref={fileRef}
@@ -126,13 +141,15 @@ export function ComposeActionBar({
           e.target.value = "";
         }}
       />
-      <button
-        onClick={() => runCommandById("compose.discard")}
-        className="rounded px-1.5 py-1 text-[13px] text-ink-3 hover:text-bad"
-        title={`Discard draft (${formatKeyExpr(shortcutHint("compose.discard"))})`}
-      >
-        🗑
-      </button>
+      <HoverHint label="Discard draft" command="compose.discard">
+        <button
+          onClick={() => runCommandById("compose.discard")}
+          className="rounded px-1.5 py-1 text-[13px] text-ink-3 hover:text-bad"
+          aria-label="Discard draft"
+        >
+          🗑
+        </button>
+      </HoverHint>
       {error && <span className="ml-1 text-[12px] text-bad">{error}</span>}
     </div>
   );

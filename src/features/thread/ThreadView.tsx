@@ -8,6 +8,7 @@ import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { Avatar } from "@/components/Avatar";
 import { ContactPanel } from "@/components/ContactPanel";
+import { HoverHint } from "@/components/HoverHint";
 import { Label } from "@/components/Label";
 import { InviteBar } from "@/features/thread/InviteBar";
 import { ReplyDock } from "@/features/compose/ReplyDock";
@@ -596,13 +597,15 @@ export function ThreadView() {
     <div className="flex h-full min-w-0">
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center gap-3 px-7 py-2.5">
-          <button
-            className="rounded px-1.5 py-0.5 text-ink-3 hover:bg-hover"
-            onClick={() => useMail.getState().closeThread()}
-            title="Back (Esc)"
-          >
-            ←
-          </button>
+          <HoverHint label="Back" command="back" placement="bottom">
+            <button
+              className="rounded px-1.5 py-0.5 text-ink-3 hover:bg-hover"
+              onClick={() => useMail.getState().closeThread()}
+              aria-label="Back"
+            >
+              ←
+            </button>
+          </HoverHint>
           <div className="flex-1" />
           <span className="text-[11px] text-ink-3">
             <span className="kbd">E</span> done · <span className="kbd">R</span>{" "}

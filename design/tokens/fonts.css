@@ -1,0 +1,17 @@
+/* ============================================================
+   Snail Mail — Webfont substitutes.
+   The product's native fonts are Windows-only (Segoe UI Variable,
+   Cascadia Code). These Google faces are the closest shippable
+   matches and load everywhere, so previews and consumer designs no
+   longer depend on the OS having the originals:
+     · Source Sans 3  → UI / body  (Segoe UI substitute)
+     · JetBrains Mono → keycaps, code, values (Cascadia substitute)
+   The originals remain first in the fallback stacks (see typography.css),
+   so a machine that has them still renders them.
+
+   Plus ONE display face, used for MARKETING / brand headings only:
+     · Chakra Petch → a square, forward-slanted technical italic that
+       echoes the Snail Mail wordmark's "fast" voice. Never use it in the
+       dense app UI — that stays Source Sans. Exposed as --font-display.
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,500;0,600;0,700;1,600;1,700&family=JetBrains+Mono:wght@400;500&family=Source+Sans+3:wght@400;500;600&display=swap');

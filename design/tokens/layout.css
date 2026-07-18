@@ -1,0 +1,47 @@
+/* ============================================================
+   Snail Mail — Spacing, radii, shadow & motion tokens
+   Derived from real measurements in the product source. The app is a
+   dense, keyboard-first desktop client, so the spacing scale is fine
+   (2px increments low down) and radii are modest.
+   ============================================================ */
+:root {
+  /* ---- Spacing scale (px). Dense desktop rhythm. ---- */
+  --space-0: 0;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Fixed layout metrics from the app shell */
+  --h-header: 48px;   /* top app bar */
+  --h-footer: 28px;   /* shortcut hint strip */
+  --w-calendar: 288px;/* day-panel aside (w-72) */
+  --w-overlay: 640px; /* command palette / dialog width */
+
+  /* ---- Radii ---- */
+  --radius-xs: 4px;   /* kbd chips, small buttons */
+  --radius-sm: 6px;   /* buttons, inputs */
+  --radius-md: 8px;   /* cards, message cards (rounded-lg) */
+  --radius-lg: 12px;  /* palette, dialogs (rounded-xl) */
+  --radius-pill: 999px;
+
+  /* ---- Shadows — used sparingly; overlays only. No shadows on
+         resting surfaces (depth comes from layered backgrounds). ---- */
+  --shadow-toast: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-overlay: 0 24px 60px rgba(0, 0, 0, 0.55);
+
+  /* ---- Motion. Two named animations, both short. No bounces on
+         content; a single soft ease for pop-ins. ---- */
+  --ease-out: ease-out; /* @kind other */
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1); /* @kind other */
+  --dur-fade: 120ms; /* @kind other */
+  --dur-pop: 140ms; /* @kind other */
+}

@@ -1,0 +1,87 @@
+/* ============================================================
+   Snail Mail — Base element styles & shared utility classes.
+   Ported from the product's theme.css so specimen cards, components,
+   and UI kits share the real look. Depends on the token files.
+   ============================================================ */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Visible keyboard focus everywhere (WCAG 2.4.7 / 2.2). */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 4px;
+}
+
+::selection {
+  background: oklch(0.802 0.122 222 / 0.35);
+}
+html[data-theme="light"] ::selection {
+  background: oklch(0.522 0.142 222 / 0.22);
+}
+
+/* Scrollbars tuned for the dark surfaces. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+html[data-theme="light"] *::-webkit-scrollbar-thumb {
+  background: rgba(20, 26, 40, 0.22);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* Keycap hint chips used in the palette + shortcut help. */
+.kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* Two named animations — both short. */
+@keyframes sm-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes sm-pop-in {
+  from { opacity: 0; transform: scale(0.98) translateY(4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.sm-fade-in {
+  animation: sm-fade-in var(--dur-fade) var(--ease-out);
+}
+.sm-pop-in {
+  animation: sm-pop-in var(--dur-pop) var(--ease-pop);
+}
